@@ -38,7 +38,7 @@ export default function Navbar() {
         return;
       }
       const data = await response.json();
-      setBalance(data.wallet.balance);
+      setBalance(data.wallet.available ?? data.wallet.balance);
     } catch {
       setBalance(null);
     }
@@ -184,7 +184,7 @@ export default function Navbar() {
 
               <span className="flex items-center gap-2 border border-line bg-surface px-2.5 py-1.5">
                 <span className="hidden font-mono text-[10px] uppercase tracking-[0.12em] text-muted sm:inline">
-                  Bal
+                  Avail
                 </span>
                 <span className="font-mono text-xs font-medium text-ink">
                   {balance === null ? "—" : formatCredits(balance)}
