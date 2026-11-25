@@ -8,7 +8,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { formatCredits, formatDate, formatPercent } from "@/lib/format";
+import { formatCents, formatCredits, formatDate } from "@/lib/format";
 
 type MarketStatus = "DRAFT" | "OPEN" | "CLOSED" | "RESOLVED" | "VOID";
 type Outcome = "YES" | "NO";
@@ -27,13 +27,18 @@ type AdminMarket = {
     evidenceUrl: string | null;
     resolvedAt: string;
   } | null;
-  pool: {
-    yes: number;
-    no: number;
-    total: number;
-    yesPercentage: number;
-    noPercentage: number;
-  };
+  stats: {
+    lastPrice: number | null;
+    bestBid: number | null;
+    bestAsk: number | null;
+    mid: number | null;
+    spread: number | null;
+    volume24h: number;
+    trades24h: number;
+    openInterest: number;
+    change24h: number | null;
+    spark: number[];
+  } | null;
 };
 
 type AdminMarketsResponse = {
@@ -217,16 +222,16 @@ export default function AdminPage() {
       }
 
       if (action === "resolve" && payload.settlement) {
-        const { outcome, winnerCount, totalPayout } = payload.settlement;
+        const { outcome, winners, totalPayout } = payload.settlement;
         setNotice({
           tone: "success",
-          message: `Resolved ${outcome}: ${formatCredits(totalPayout)} cr paid to ${winnerCount} ${winnerCount === 1 ? "winner" : "winners"}.`,
+          message: `Resolved ${outcome}: ${formatCredits(totalPayout)} cr paid to ${winners} ${winners === 1 ? "winner" : "winners"}.`,
         });
       } else if (action === "void" && payload.refund) {
-        const { betCount, amount } = payload.refund;
+        const { totalRefund, holders, price } = payload.refund;
         setNotice({
           tone: "success",
-          message: `Voided: ${formatCredits(amount)} cr refunded across ${betCount} ${betCount === 1 ? "bet" : "bets"}.`,
+          message: `Voided: ${formatCredits(totalRefund)} cr returned across ${holders} ${holders === 1 ? "holder" : "holders"} at ${formatCents(price)}.`,
         });
       } else {
         setNotice({
@@ -317,7 +322,10 @@ export default function AdminPage() {
 
   const markets = data?.markets ?? [];
   const pagination = data?.pagination;
-  const pagePool = markets.reduce((sum, market) => sum + market.pool.total, 0);
+  const pageVolume = markets.reduce(
+    (sum, market) => sum + (market.stats?.volume24h ?? 0),
+    0,
+  );
   const needsSettlement = markets.filter(
     (market) => market.status === "CLOSED",
   ).length;
@@ -343,9 +351,9 @@ export default function AdminPage() {
                 </dd>
               </div>
               <div>
-                <dt>Pool on page</dt>
+                <dt>24h volume on page</dt>
                 <dd className="mt-1 text-sm normal-case tracking-normal text-ink">
-                  {data ? `${formatCredits(pagePool)} cr` : "—"}
+                  {data ? `${formatCredits(pageVolume)} shares` : "—"}
                 </dd>
               </div>
               <div>
@@ -358,8 +366,9 @@ export default function AdminPage() {
           </div>
 
           <p className="mt-4 max-w-[58ch] text-sm leading-6 text-muted">
-            Open, close, resolve, and void markets. Settlement pays the winning
-            pool pro-rata and is final — every action writes to the audit log.
+            Open, close, resolve, and void markets. Settlement pays 100 credits
+            per winning share and is final — every action writes to the audit
+            log.
           </p>
         </div>
       </section>
@@ -672,7 +681,7 @@ export default function AdminPage() {
                     Status
                   </th>
                   <th scope="col" className="w-40 py-3 pr-2 text-left font-normal">
-                    Pool
+                    Price
                   </th>
                   <th scope="col" className="w-28 py-3 text-left font-normal">
                     Closes
@@ -685,14 +694,7 @@ export default function AdminPage() {
               <tbody>
                 {markets.map((market) => {
                   const isExpanded = expandedSlug === market.slug;
-                  const yesMultiplier =
-                    market.pool.total > 0 && market.pool.yes > 0
-                      ? market.pool.total / market.pool.yes
-                      : null;
-                  const noMultiplier =
-                    market.pool.total > 0 && market.pool.no > 0
-                      ? market.pool.total / market.pool.no
-                      : null;
+                  const stats = market.stats;
 
                   return (
                     <Fragment key={market.id}>
@@ -716,27 +718,23 @@ export default function AdminPage() {
                           </span>
                         </td>
                         <td className="py-4 pr-2">
-                          <div className="flex h-1 w-28 overflow-hidden bg-line">
-                            {market.pool.total > 0 && (
-                              <>
-                                <span
-                                  className="h-full bg-yes"
-                                  style={{
-                                    width: `${market.pool.yesPercentage}%`,
-                                  }}
-                                />
-                                <span
-                                  className="h-full bg-no"
-                                  style={{
-                                    width: `${market.pool.noPercentage}%`,
-                                  }}
-                                />
-                              </>
-                            )}
-                          </div>
-                          <span className="mt-1.5 block font-mono text-[10px] text-muted">
-                            {formatCredits(market.pool.total)} cr ·{" "}
-                            {formatPercent(market.pool.yesPercentage)} YES
+                          <span className="block font-mono text-sm text-ink">
+                            {stats?.lastPrice === null || !stats
+                              ? "—"
+                              : formatCents(stats.lastPrice)}
+                          </span>
+                          <span className="mt-0.5 block font-mono text-[10px] text-muted">
+                            Bid{" "}
+                            {stats?.bestBid === null || !stats
+                              ? "—"
+                              : formatCents(stats.bestBid)}{" "}
+                            · Ask{" "}
+                            {stats?.bestAsk === null || !stats
+                              ? "—"
+                              : formatCents(stats.bestAsk)}
+                          </span>
+                          <span className="mt-0.5 block font-mono text-[10px] text-muted">
+                            {formatCredits(stats?.volume24h ?? 0)} shares · 24h
                           </span>
                         </td>
                         <td className="py-4 font-mono text-[10px] text-muted">
@@ -805,22 +803,17 @@ export default function AdminPage() {
                                   Settlement · final
                                 </p>
                                 <p className="mt-1 max-w-lg text-sm leading-5 text-muted">
-                                  {market.pool.total === 0
-                                    ? "No positions were taken. Resolving records the outcome; voiding refunds nothing."
-                                    : `Winners split the ${formatCredits(market.pool.total)} cr pool pro-rata.`}
+                                  {!stats || stats.openInterest === 0
+                                    ? "No shares are outstanding. Resolving records the outcome; voiding returns nothing."
+                                    : `Winning shares pay 100 credits each; losing shares expire at 0. Open interest is ${formatCredits(stats.openInterest)} shares.`}
                                 </p>
-                                {market.pool.total > 0 && (
-                                  <p className="mt-1 font-mono text-[10px] text-muted">
-                                    YES pays{" "}
-                                    {yesMultiplier
-                                      ? `${yesMultiplier.toFixed(2)}×`
-                                      : "—"}
-                                    {" · "}NO pays{" "}
-                                    {noMultiplier
-                                      ? `${noMultiplier.toFixed(2)}×`
-                                      : "—"}
-                                  </p>
-                                )}
+                                <p className="mt-1 font-mono text-[10px] text-muted">
+                                  Voiding unwinds positions at the last traded
+                                  price ({stats?.lastPrice === null || !stats
+                                    ? "50¢"
+                                    : formatCents(stats.lastPrice)}) and
+                                  cancels every resting order.
+                                </p>
                               </div>
 
                               <div className="flex flex-wrap items-center gap-2">
@@ -874,7 +867,7 @@ export default function AdminPage() {
                                 >
                                   {pendingKey === `${market.slug}:void`
                                     ? "Voiding…"
-                                    : "Void & refund"}
+                                    : "Void & unwind"}
                                 </button>
                               </div>
                             </div>
@@ -922,8 +915,9 @@ export default function AdminPage() {
 
       <div className="mx-auto w-full max-w-7xl px-4 pb-16 sm:px-6">
         <p className="border-t border-line pt-6 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-          Resolving credits winners instantly; voiding returns every stake.
-          Actions cannot be undone.
+          Resolving credits 100 cr per winning share; voiding unwinds positions
+          at the last traded price and cancels resting orders. Actions cannot be
+          undone.
         </p>
       </div>
     </main>
