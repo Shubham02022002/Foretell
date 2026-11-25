@@ -5,10 +5,10 @@ import {
 } from "@/lib/validations/leaderboard";
 
 const PROFIT_TYPES = [
-  "BET_STAKE",
-  "BET_PAYOUT",
+  "TRADE_BUY",
+  "TRADE_SELL",
+  "SETTLEMENT_PAYOUT",
   "REFUND",
-  "POSITION_SALE",
 ] as const;
 
 export type TraderStanding = {
@@ -26,7 +26,7 @@ export async function getTraderStandings(
   const since = duration === null ? undefined : new Date(Date.now() - duration);
   const windowFilter = since ? { createdAt: { gte: since } } : {};
 
-  const [profitRows, stakeRows, payoutRows] = await Promise.all([
+  const [profitRows, buyRows, sellRows, payoutRows] = await Promise.all([
     prisma.ledgerEntry.groupBy({
       by: ["userId"],
       where: { type: { in: [...PROFIT_TYPES] }, ...windowFilter },
@@ -34,38 +34,48 @@ export async function getTraderStandings(
     }),
     prisma.ledgerEntry.groupBy({
       by: ["userId"],
-      where: { type: "BET_STAKE", ...windowFilter },
+      where: { type: "TRADE_BUY", ...windowFilter },
       _sum: { amount: true },
       _count: { _all: true },
     }),
     prisma.ledgerEntry.groupBy({
       by: ["userId"],
-      where: { type: "BET_PAYOUT", ...windowFilter },
+      where: { type: "TRADE_SELL", ...windowFilter },
+      _count: { _all: true },
+    }),
+    prisma.ledgerEntry.groupBy({
+      by: ["userId"],
+      where: { type: "SETTLEMENT_PAYOUT", ...windowFilter },
       _count: { _all: true },
     }),
   ]);
 
-  const stakeById = new Map(
-    stakeRows.map((row) => [
+  const buyById = new Map(
+    buyRows.map((row) => [
       row.userId,
-      { volume: Math.abs(row._sum.amount ?? 0), bets: row._count._all },
+      {
+        volume: Math.abs(row._sum.amount ?? 0),
+        buys: row._count._all,
+      },
     ]),
   );
-
+  const sellById = new Map(
+    sellRows.map((row) => [row.userId, row._count._all]),
+  );
   const winsById = new Map(
     payoutRows.map((row) => [row.userId, row._count._all]),
   );
 
   return profitRows
-    .filter((row) => stakeById.has(row.userId))
+    .filter((row) => buyById.has(row.userId) || sellById.has(row.userId))
     .map((row) => {
-      const stake = stakeById.get(row.userId);
+      const buys = buyById.get(row.userId);
 
       return {
         userId: row.userId,
         net: row._sum.amount ?? 0,
-        volume: stake?.volume ?? 0,
-        bets: stake?.bets ?? 0,
+        volume: buys?.volume ?? 0,
+        bets: (buys?.buys ?? 0) + (sellById.get(row.userId) ?? 0),
         wins: winsById.get(row.userId) ?? 0,
       };
     })

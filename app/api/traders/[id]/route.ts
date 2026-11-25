@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import prisma from "@/lib/prisma";
+import { getLatestPrices } from "@/lib/exchange/portfolio";
 import { getTraderStandings } from "@/lib/leaderboard";
+import { SHARE_VALUE } from "@/lib/exchange/constants";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -11,7 +13,7 @@ const traderParamsSchema = z.object({
   id: z.uuid(),
 });
 
-const RECENT_BET_LIMIT = 20;
+const RECENT_POSITION_LIMIT = 20;
 
 export async function GET(_request: Request, { params }: RouteContext) {
   const paramsResult = traderParamsSchema.safeParse(await params);
@@ -34,18 +36,33 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
     const [standings, openPositions, positions] = await Promise.all([
       getTraderStandings("all"),
-      prisma.bet.count({
-        where: { userId: id, market: { status: "OPEN" } },
+      prisma.position.count({
+        where: {
+          userId: id,
+          market: { status: "OPEN" },
+          OR: [{ yesShares: { gt: 0 } }, { noShares: { gt: 0 } }],
+        },
       }),
-      prisma.bet.findMany({
-        where: { userId: id },
-        orderBy: { createdAt: "desc" },
-        take: RECENT_BET_LIMIT,
+      prisma.position.findMany({
+        where: {
+          userId: id,
+          OR: [
+            { yesShares: { gt: 0 } },
+            { noShares: { gt: 0 } },
+            { realized: { not: 0 } },
+          ],
+        },
+        orderBy: { updatedAt: "desc" },
+        take: RECENT_POSITION_LIMIT,
         select: {
           id: true,
-          outcome: true,
-          amount: true,
-          createdAt: true,
+          marketId: true,
+          yesShares: true,
+          noShares: true,
+          yesCost: true,
+          noCost: true,
+          realized: true,
+          updatedAt: true,
           market: {
             select: {
               slug: true,
@@ -58,6 +75,41 @@ export async function GET(_request: Request, { params }: RouteContext) {
         },
       }),
     ]);
+
+    const prices = await getLatestPrices(
+      prisma,
+      positions.map((position) => position.marketId),
+    );
+
+    const mappedPositions = positions.map((position) => {
+      const markPrice = prices.get(position.marketId) ?? null;
+      const marketValue =
+        markPrice === null
+          ? 0
+          : position.yesShares * markPrice +
+            position.noShares * (SHARE_VALUE - markPrice);
+
+      return {
+        id: position.id,
+        market: position.market,
+        yesShares: position.yesShares,
+        noShares: position.noShares,
+        yesCost: position.yesCost,
+        noCost: position.noCost,
+        avgYesPrice:
+          position.yesShares > 0
+            ? Number((position.yesCost / position.yesShares).toFixed(2))
+            : null,
+        avgNoPrice:
+          position.noShares > 0
+            ? Number((position.noCost / position.noShares).toFixed(2))
+            : null,
+        realized: position.realized,
+        markPrice,
+        marketValue,
+        updatedAt: position.updatedAt,
+      };
+    });
 
     const rank = standings.findIndex((entry) => entry.userId === id);
 
@@ -77,7 +129,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
             rank: null,
           },
         },
-        positions: [],
+        positions: mappedPositions,
       });
     }
 
@@ -98,7 +150,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
           rank: rank + 1,
         },
       },
-      positions,
+      positions: mappedPositions,
     });
   } catch (error) {
     console.error("Failed to fetch trader:", error);
