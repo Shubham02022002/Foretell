@@ -46,10 +46,17 @@ export function FeaturedMarketTicket() {
   const { markets, error } = useOpenMarkets(4);
   const market = markets?.reduce<MarketSummary | undefined>(
     (best, candidate) =>
-      !best || candidate.pool.total > best.pool.total ? candidate : best,
+      !best || candidate.stats.volume24h > best.stats.volume24h
+        ? candidate
+        : best,
     undefined,
   );
-  const hasPool = market ? market.pool.total > 0 : false;
+  const yesPrice = market
+    ? (market.stats.lastPrice ??
+      (market.stats.mid !== null ? Math.round(market.stats.mid) : null))
+    : null;
+  const hasPrice = yesPrice !== null;
+  const noPrice = yesPrice === null ? null : 100 - yesPrice;
 
   return (
     <aside className="border border-ink bg-ink p-5 text-paper sm:p-6">
@@ -100,10 +107,10 @@ export function FeaturedMarketTicket() {
                 Yes
               </p>
               <p className="mt-1 font-display text-4xl font-semibold tracking-[-0.03em] text-yes-soft">
-                {hasPool ? `${Math.round(market.pool.yesPercentage)}%` : "—"}
+                {hasPrice ? `${yesPrice}%` : "—"}
               </p>
               <p className="mt-1 font-mono text-[10px] text-paper/40">
-                {hasPool ? formatCents(market.pool.yesPercentage) : "No pool"}
+                {hasPrice ? formatCents(yesPrice) : "No trades"}
               </p>
             </div>
             <div className="border-l border-paper/15 pl-6">
@@ -111,18 +118,18 @@ export function FeaturedMarketTicket() {
                 No
               </p>
               <p className="mt-1 font-display text-4xl font-semibold tracking-[-0.03em] text-no-soft">
-                {hasPool ? `${Math.round(market.pool.noPercentage)}%` : "—"}
+                {hasPrice ? `${noPrice}%` : "—"}
               </p>
               <p className="mt-1 font-mono text-[10px] text-paper/40">
-                {hasPool ? formatCents(market.pool.noPercentage) : "No pool"}
+                {noPrice === null ? "No trades" : formatCents(noPrice)}
               </p>
             </div>
           </div>
 
           <div className="mt-5">
-            {hasPool ? (
+            {hasPrice ? (
               <ProbabilityBar
-                yes={market.pool.yesPercentage}
+                yes={yesPrice}
                 className="h-2"
                 trackClassName="bg-paper/15"
               />
@@ -134,10 +141,10 @@ export function FeaturedMarketTicket() {
           <dl className="mt-6 grid grid-cols-2 gap-4 border-t border-paper/15 pt-4">
             <div>
               <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-paper/40">
-                Total pool
+                24h volume
               </dt>
               <dd className="mt-1 font-mono text-sm text-paper">
-                {hasPool ? `${formatCredits(market.pool.total)} cr` : "—"}
+                {formatCredits(market.stats.volume24h)} shares
               </dd>
             </div>
             <div>

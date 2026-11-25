@@ -179,7 +179,7 @@ export default function MarketsPage() {
               <div>
                 <dt>Pricing</dt>
                 <dd className="mt-1 text-sm normal-case tracking-normal text-ink">
-                  Pool share
+                  Order book
                 </dd>
               </div>
             </dl>
@@ -187,7 +187,8 @@ export default function MarketsPage() {
 
           <p className="mt-4 max-w-[54ch] text-sm leading-6 text-muted">
             Every question publishes its resolution rules before trading opens.
-            Take a side, and let the pool decide the price.
+            Post a limit order, take the best price, and let the book settle the
+            rest.
           </p>
         </div>
       </section>
