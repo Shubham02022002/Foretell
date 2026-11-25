@@ -12,14 +12,22 @@ export async function GET() {
   try {
     const wallet = await prisma.wallet.findUnique({
       where: { userId: session.user.id },
-      select: { balance: true, updatedAt: true },
+      select: { balance: true, reserved: true, updatedAt: true },
     });
 
     if (!wallet) {
       return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ wallet }, { status: 200 });
+    return NextResponse.json(
+      {
+        wallet: {
+          ...wallet,
+          available: wallet.balance - wallet.reserved,
+        },
+      },
+      { status: 200 },
+    );
   } catch (error) {
     console.error("Failed to fetch wallet:", error);
     return NextResponse.json(
