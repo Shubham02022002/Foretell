@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { ApiError, apiErrorResponse } from "@/lib/api/errors";
 import { requireAdmin } from "@/lib/auth/authorization";
 import prisma from "@/lib/prisma";
+import { voidMarket } from "@/lib/exchange/market";
 import {
   marketParamsSchema,
   marketVoidSchema,
 } from "@/lib/validations/market";
-import { computeRefunds } from "@/lib/settlement";
 
 type RouteContext = {
   params: Promise<{ slug: string }>;
@@ -59,113 +59,30 @@ export async function POST(request: Request, { params }: RouteContext) {
   const { notes } = bodyResult.data;
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.market.findUnique({
-        where: { slug },
-        select: { id: true, status: true, question: true },
-      });
-
-      if (!existing) {
-        throw new ApiError(404, "Market not found");
-      }
-
-      if (existing.status !== "OPEN" && existing.status !== "CLOSED") {
-        throw new ApiError(409, "Only open or closed markets can be voided");
-      }
-
-      const claimed = await tx.market.updateMany({
-        where: {
-          id: existing.id,
-          status: { in: ["OPEN", "CLOSED"] },
-        },
-        data: { status: "VOID" },
-      });
-
-      if (claimed.count === 0) {
-        throw new ApiError(409, "Market status changed; refresh and retry");
-      }
-
-      const bets = await tx.bet.findMany({
-        where: { marketId: existing.id },
-        select: {
-          id: true,
-          userId: true,
-          amount: true,
-        },
-      });
-
-      const refundBreakdown = computeRefunds(bets);
-      const refunds = refundBreakdown.refunds.map((refund) => ({
-        userId: refund.userId,
-        marketId: existing.id,
-        betId: refund.betId,
-        type: "REFUND" as const,
-        amount: refund.amount,
-      }));
-      const refundsByUser = new Map<string, number>();
-
-      for (const refund of refundBreakdown.refunds) {
-        refundsByUser.set(
-          refund.userId,
-          (refundsByUser.get(refund.userId) ?? 0) + refund.amount,
-        );
-      }
-
-      if (refunds.length > 0) {
-        await tx.ledgerEntry.createMany({ data: refunds });
-      }
-
-      for (const [userId, amount] of refundsByUser) {
-        await tx.wallet.updateMany({
-          where: { userId },
-          data: { balance: { increment: amount } },
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const market = await tx.market.findUnique({
+          where: { slug },
+          select: { id: true },
         });
-      }
 
-      const watchers = await tx.watchlist.findMany({
-        where: { marketId: existing.id },
-        select: { userId: true },
-      });
+        if (!market) {
+          throw new ApiError(404, "Market not found");
+        }
 
-      const recipientIds = new Set([
-        ...bets.map((bet) => bet.userId),
-        ...watchers.map((watch) => watch.userId),
-      ]);
-
-      if (recipientIds.size > 0) {
-        await tx.notification.createMany({
-          data: [...recipientIds].map((userId) => ({
-            userId,
-            marketId: existing.id,
-            type: "MARKET_VOIDED",
-            title: "Market voided — stakes refunded",
-            body: existing.question,
-          })),
+        const refund = await voidMarket(tx, {
+          marketId: market.id,
+          adminId: admin.userId,
+          notes: notes ?? null,
         });
-      }
 
-      await tx.auditEvent.create({
-        data: {
-          userId: admin.userId,
-          marketId: existing.id,
-          action: "MARKET_VOIDED",
-          details: {
-            slug,
-            refundedBets: refundBreakdown.betCount,
-            refundedAmount: refundBreakdown.totalRefund,
-            notes: notes ?? null,
-          },
-        },
-      });
-
-      return {
-        market: { slug, status: "VOID" as const },
-        refund: {
-          betCount: refundBreakdown.betCount,
-          amount: refundBreakdown.totalRefund,
-        },
-      };
-    }, { maxWait: 10_000, timeout: 15_000 });
+        return {
+          market: { slug, status: "VOID" as const },
+          refund,
+        };
+      },
+      { maxWait: 10_000, timeout: 20_000 },
+    );
 
     return NextResponse.json(result);
   } catch (error) {

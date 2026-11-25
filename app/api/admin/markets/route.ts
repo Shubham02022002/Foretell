@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/authorization";
 import prisma from "@/lib/prisma";
+import { getMarketStatsMap } from "@/lib/exchange/market";
 import { marketQuerySchema } from "@/lib/validations/market";
 
 export async function GET(request: NextRequest) {
@@ -59,44 +60,15 @@ export async function GET(request: NextRequest) {
     ]);
 
     const marketIds = markets.map((market) => market.id);
-    const pools = marketIds.length
-      ? await prisma.bet.groupBy({
-          by: ["marketId", "outcome"],
-          where: { marketId: { in: marketIds } },
-          _sum: { amount: true },
-        })
-      : [];
+    const statsByMarket = await getMarketStatsMap(prisma, marketIds);
 
-    const poolByMarket = new Map<string, { yes: number; no: number }>();
-
-    for (const row of pools) {
-      const entry = poolByMarket.get(row.marketId) ?? { yes: 0, no: 0 };
-      if (row.outcome === "YES") {
-        entry.yes = row._sum.amount ?? 0;
-      } else {
-        entry.no = row._sum.amount ?? 0;
-      }
-      poolByMarket.set(row.marketId, entry);
-    }
-
-    const marketsWithPools = markets.map((market) => {
-      const { yes, no } = poolByMarket.get(market.id) ?? { yes: 0, no: 0 };
-      const total = yes + no;
-
-      return {
-        ...market,
-        pool: {
-          yes,
-          no,
-          total,
-          yesPercentage: total === 0 ? 0 : (yes / total) * 100,
-          noPercentage: total === 0 ? 0 : (no / total) * 100,
-        },
-      };
-    });
+    const marketsWithStats = markets.map((market) => ({
+      ...market,
+      stats: statsByMarket.get(market.id) ?? null,
+    }));
 
     return NextResponse.json({
-      markets: marketsWithPools,
+      markets: marketsWithStats,
       pagination: {
         page,
         limit,

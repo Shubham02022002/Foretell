@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { ApiError, apiErrorResponse } from "@/lib/api/errors";
 import { requireAdmin } from "@/lib/auth/authorization";
 import prisma from "@/lib/prisma";
+import { resolveMarket } from "@/lib/exchange/market";
 import {
   marketParamsSchema,
   marketResolutionSchema,
 } from "@/lib/validations/market";
-import { computeSettlement } from "@/lib/settlement";
 
 type RouteContext = {
   params: Promise<{ slug: string }>;
@@ -58,137 +58,44 @@ export async function POST(request: Request, { params }: RouteContext) {
   const { outcome, notes, evidenceUrl } = bodyResult.data;
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.market.findUnique({
-        where: { slug },
-        select: { id: true, status: true, question: true },
-      });
-
-      if (!existing) {
-        throw new ApiError(404, "Market not found");
-      }
-
-      if (existing.status !== "CLOSED") {
-        throw new ApiError(409, "Only closed markets can be resolved");
-      }
-
-      const claimed = await tx.market.updateMany({
-        where: { id: existing.id, status: "CLOSED" },
-        data: { status: "RESOLVED" },
-      });
-
-      if (claimed.count === 0) {
-        throw new ApiError(409, "Market status changed; refresh and retry");
-      }
-
-      const bets = await tx.bet.findMany({
-        where: { marketId: existing.id },
-        select: {
-          id: true,
-          userId: true,
-          outcome: true,
-          amount: true,
-        },
-      });
-
-      const settlement = computeSettlement(bets, outcome);
-      const payouts = settlement.payouts.map((payout) => ({
-        userId: payout.userId,
-        marketId: existing.id,
-        betId: payout.betId,
-        type: "BET_PAYOUT" as const,
-        amount: payout.amount,
-      }));
-      const payoutsByUser = new Map<string, number>();
-
-      for (const payout of settlement.payouts) {
-        payoutsByUser.set(
-          payout.userId,
-          (payoutsByUser.get(payout.userId) ?? 0) + payout.amount,
-        );
-      }
-
-      if (payouts.length > 0) {
-        await tx.ledgerEntry.createMany({ data: payouts });
-      }
-
-      for (const [userId, amount] of payoutsByUser) {
-        await tx.wallet.updateMany({
-          where: { userId },
-          data: { balance: { increment: amount } },
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const market = await tx.market.findUnique({
+          where: { slug },
+          select: { id: true },
         });
-      }
 
-      const watchers = await tx.watchlist.findMany({
-        where: { marketId: existing.id },
-        select: { userId: true },
-      });
+        if (!market) {
+          throw new ApiError(404, "Market not found");
+        }
 
-      const recipientIds = new Set([
-        ...bets.map((bet) => bet.userId),
-        ...watchers.map((watch) => watch.userId),
-      ]);
-
-      if (recipientIds.size > 0) {
-        await tx.notification.createMany({
-          data: [...recipientIds].map((userId) => ({
-            userId,
-            marketId: existing.id,
-            type: "MARKET_RESOLVED",
-            title: `Market resolved ${outcome}`,
-            body: existing.question,
-          })),
-        });
-      }
-
-      const resolution = await tx.marketResolution.create({
-        data: {
-          marketId: existing.id,
+        const settlement = await resolveMarket(tx, {
+          marketId: market.id,
+          adminId: admin.userId,
           outcome,
           notes: notes || null,
           evidenceUrl: evidenceUrl || null,
-          resolvedBy: admin.userId,
-        },
-        select: {
-          id: true,
-          outcome: true,
-          notes: true,
-          evidenceUrl: true,
-          resolvedAt: true,
-        },
-      });
+        });
 
-      await tx.auditEvent.create({
-        data: {
-          userId: admin.userId,
-          marketId: existing.id,
-          action: "MARKET_RESOLVED",
-          details: {
-            slug,
-            outcome,
-            totalPool: settlement.totalPool,
-            winningPool: settlement.winningPool,
-            totalPayout: settlement.totalPayout,
-            winnerCount: settlement.winnerCount,
-            dust: settlement.dust,
+        const resolution = await tx.marketResolution.findUnique({
+          where: { marketId: market.id },
+          select: {
+            id: true,
+            outcome: true,
+            notes: true,
+            evidenceUrl: true,
+            resolvedAt: true,
           },
-        },
-      });
+        });
 
-      return {
-        market: { slug, status: "RESOLVED" as const },
-        resolution,
-        settlement: {
-          outcome,
-          totalPool: settlement.totalPool,
-          winningPool: settlement.winningPool,
-          losingPool: settlement.losingPool,
-          winnerCount: settlement.winnerCount,
-          totalPayout: settlement.totalPayout,
-          dust: settlement.dust,
-        },
-      };
-    }, { maxWait: 10_000, timeout: 15_000 });
+        return {
+          market: { slug, status: "RESOLVED" as const },
+          resolution,
+          settlement,
+        };
+      },
+      { maxWait: 10_000, timeout: 20_000 },
+    );
 
     return NextResponse.json(result);
   } catch (error) {

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ApiError, apiErrorResponse } from "@/lib/api/errors";
 import { requireAdmin } from "@/lib/auth/authorization";
 import prisma from "@/lib/prisma";
+import { closeMarket } from "@/lib/exchange/market";
 import { marketParamsSchema } from "@/lib/validations/market";
 
 type RouteContext = {
@@ -30,40 +31,30 @@ export async function POST(_request: Request, { params }: RouteContext) {
   const { slug } = paramsResult.data;
 
   try {
-    const market = await prisma.$transaction(async (tx) => {
-      const existing = await tx.market.findUnique({
-        where: { slug },
-        select: { id: true, status: true },
-      });
+    const market = await prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.market.findUnique({
+          where: { slug },
+          select: { id: true },
+        });
 
-      if (!existing) {
-        throw new ApiError(404, "Market not found");
-      }
+        if (!existing) {
+          throw new ApiError(404, "Market not found");
+        }
 
-      if (existing.status !== "OPEN") {
-        throw new ApiError(409, "Only open markets can be closed");
-      }
-
-      const claimed = await tx.market.updateMany({
-        where: { id: existing.id, status: "OPEN" },
-        data: { status: "CLOSED" },
-      });
-
-      if (claimed.count === 0) {
-        throw new ApiError(409, "Market status changed; refresh and retry");
-      }
-
-      await tx.auditEvent.create({
-        data: {
-          userId: admin.userId,
+        const result = await closeMarket(tx, {
           marketId: existing.id,
-          action: "MARKET_CLOSED",
-          details: { slug },
-        },
-      });
+          adminId: admin.userId,
+        });
 
-      return { slug, status: "CLOSED" as const };
-    }, { maxWait: 10_000, timeout: 15_000 });
+        return {
+          slug,
+          status: "CLOSED" as const,
+          cancelledOrders: result.cancelledOrders,
+        };
+      },
+      { maxWait: 10_000, timeout: 15_000 },
+    );
 
     return NextResponse.json({ market });
   } catch (error) {
