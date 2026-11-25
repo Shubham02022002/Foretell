@@ -29,9 +29,16 @@ type Trader = {
 
 type Position = {
   id: string;
-  outcome: "YES" | "NO";
-  amount: number;
-  createdAt: string;
+  yesShares: number;
+  noShares: number;
+  yesCost: number;
+  noCost: number;
+  avgYesPrice: number | null;
+  avgNoPrice: number | null;
+  realized: number;
+  markPrice: number | null;
+  marketValue: number;
+  updatedAt: string;
   market: {
     slug: string;
     question: string;
@@ -185,20 +192,20 @@ export function TraderProfile({ id }: { id: string }) {
                   {formatSignedCredits(trader.stats.net)}
                 </dd>
                 <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                  Payouts minus stakes
+                  Cash flow across fills
                 </p>
               </div>
 
               <div className="bg-surface p-5 sm:p-6">
                 <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-                  Total staked
+                  Traded volume
                 </dt>
                 <dd className="mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em]">
                   {formatCredits(trader.stats.volume)}
                 </dd>
                 <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
                   Across {trader.stats.bets}{" "}
-                  {trader.stats.bets === 1 ? "bet" : "bets"}
+                  {trader.stats.bets === 1 ? "trade" : "trades"}
                 </p>
               </div>
 
@@ -211,7 +218,9 @@ export function TraderProfile({ id }: { id: string }) {
                   <span className="text-2xl text-muted">/{trader.stats.bets}</span>
                 </dd>
                 <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                  {winRate !== null ? `${winRate}% winning bets` : "No bets yet"}
+                  {winRate !== null
+                    ? `${winRate}% winning trades`
+                    : "No trades yet"}
                 </p>
               </div>
 
@@ -269,16 +278,35 @@ export function TraderProfile({ id }: { id: string }) {
                       </div>
 
                       <div className="flex items-center gap-3 sm:contents">
-                        <div>
-                          <SideChip side={position.outcome} />
+                        <div className="flex flex-wrap items-center gap-2">
+                          {position.yesShares > 0 && (
+                            <span className="flex items-center gap-1.5">
+                              <SideChip side="YES" />
+                              <span className="font-mono text-xs text-ink">
+                                {formatCredits(position.yesShares)}
+                              </span>
+                            </span>
+                          )}
+                          {position.noShares > 0 && (
+                            <span className="flex items-center gap-1.5">
+                              <SideChip side="NO" />
+                              <span className="font-mono text-xs text-ink">
+                                {formatCredits(position.noShares)}
+                              </span>
+                            </span>
+                          )}
                         </div>
                         <p className="font-mono text-sm text-ink">
-                          {formatCredits(position.amount)} cr
+                          {formatCredits(Math.round(position.marketValue))} cr
                         </p>
                       </div>
 
-                      <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted sm:text-right">
-                        Placed {formatDate(position.createdAt)}
+                      <p
+                        className={`font-mono text-[10px] sm:text-right ${
+                          position.realized >= 0 ? "text-yes" : "text-no"
+                        }`}
+                      >
+                        {formatSignedCredits(position.realized)} realized
                       </p>
                     </Link>
                   ))}
