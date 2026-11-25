@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Logo } from "@/components/brand";
 import { FeaturedMarketTicket, MarketBoard } from "@/components/live-markets";
+import SignupCta from "@/components/signup-cta";
 
 const STEPS = [
   {
@@ -9,18 +10,18 @@ const STEPS = [
   },
   {
     title: "Take a side",
-    body: "Back YES or NO with virtual credits. Your stake joins that side's pool, so the price moves as the crowd updates its view.",
+    body: "Buy YES or NO shares against a live order book. Post a limit order at your price, or cross the spread and take the best offer.",
   },
   {
     title: "Settle up",
-    body: "When the market resolves, the winning side splits the entire pool in proportion to stake. No house edge, no spread.",
+    body: "When the market resolves, every winning share pays 100 credits. Losing shares expire at zero. No house edge, no hidden fees.",
   },
 ];
 
 const LEDGER_ROWS = [
-  { type: "BET_STAKE", detail: "YES · 120 cr", amount: "−120" },
-  { type: "BET_STAKE", detail: "NO · 80 cr", amount: "−80" },
-  { type: "BET_PAYOUT", detail: "Resolved YES", amount: "+240" },
+  { type: "TRADE_BUY", detail: "BUY YES · 10 @ 62¢", amount: "−620" },
+  { type: "TRADE_BUY", detail: "BUY NO · 5 @ 35¢", amount: "−175" },
+  { type: "SETTLEMENT_PAYOUT", detail: "YES resolved · 10 shares", amount: "+1,000" },
 ];
 
 export default function LandingPage() {
@@ -39,8 +40,8 @@ export default function LandingPage() {
 
           <p className="mt-6 max-w-[46ch] text-base leading-7 text-muted sm:text-lg sm:leading-8">
             Take a YES or NO position on the models, benchmarks, and releases
-            that define the industry. Prices move with the crowd. Winners split
-            the pool.
+            that define the industry. Prices come from a live order book, and
+            every winning share pays 100 credits.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -71,7 +72,7 @@ export default function LandingPage() {
           <span>Virtual credits only</span>
           <span>Public resolution rules</span>
           <span>Append-only ledger</span>
-          <span>Pooled payouts</span>
+          <span>Live order book</span>
         </div>
       </div>
 
@@ -133,12 +134,12 @@ export default function LandingPage() {
               Every credit, accounted for.
             </h2>
             <p className="mt-5 max-w-[42ch] text-sm leading-6 text-paper/60">
-              Stakes, payouts, and refunds are written to an append-only ledger.
-              No hidden balance changes, no house edge, no fine print between
-              you and the pool.
+              Orders, fills, and payouts are written to an append-only ledger.
+              No hidden balance changes, no house edge — just price-time
+              priority and full settlement.
             </p>
             <p className="mt-8 max-w-[40ch] font-mono text-[10px] uppercase leading-5 tracking-[0.12em] text-paper/40">
-              Balances are enforced by the bet endpoint. Settlement is atomic:
+              Balances are enforced by the order engine. Settlement is atomic:
               either every payout lands or none do.
             </p>
           </div>
@@ -149,7 +150,7 @@ export default function LandingPage() {
                 Sample ledger
               </span>
               <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-paper/50">
-                Balance 1,040 cr
+                Balance 1,205 cr
               </span>
             </div>
 
@@ -183,37 +184,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="mx-auto w-full max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
-        <div className="grid gap-8 border border-ink bg-surface p-8 sm:p-12 lg:grid-cols-[1fr_auto] lg:items-end">
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted">
-              Start forecasting
-            </p>
-            <h2 className="mt-3 max-w-[17ch] text-balance font-display text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-              Your first 1,000 credits are on us.
-            </h2>
-            <p className="mt-4 max-w-[46ch] text-sm leading-6 text-muted">
-              Open an account, take a side, and find out how good your read on
-              the future really is.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
-            <Link
-              href="/register"
-              className="inline-flex items-center justify-center gap-3 bg-accent px-5 py-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white transition-opacity hover:opacity-90"
-            >
-              Open an account <span aria-hidden="true">→</span>
-            </Link>
-            <Link
-              href="/markets"
-              className="inline-flex items-center justify-center border border-line-strong px-5 py-3 font-mono text-[11px] uppercase tracking-[0.14em] text-ink transition-colors hover:border-ink"
-            >
-              Browse markets
-            </Link>
-          </div>
-        </div>
-      </section>
+      <SignupCta />
 
       <footer className="border-t border-line">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-10 sm:px-6 md:flex-row md:items-center md:justify-between">

@@ -74,16 +74,16 @@ export function AuthShell({
               />
 
               <div className="mt-3 flex justify-between font-mono text-[9px] uppercase tracking-[0.1em] text-paper/40">
-                <span>640 cr yes</span>
-                <span>1,000 cr pool</span>
-                <span>360 cr no</span>
+                <span>Bid 62¢</span>
+                <span>Spread 2¢</span>
+                <span>Ask 64¢</span>
               </div>
             </div>
           </div>
 
           <p className="mt-5 max-w-[38ch] text-sm leading-6 text-paper/50">
-            Prices are set by the pool, not a market maker. When the question
-            resolves, the winning side splits everything.
+            Prices come from a live order book. When the question resolves,
+            every winning share pays 100 credits.
           </p>
         </div>
 

@@ -31,7 +31,7 @@ export const metadata: Metadata = {
     template: "%s — Foretell",
   },
   description:
-    "Take YES or NO positions on AI models, benchmarks, and industry milestones. Virtual credits, pooled payouts, public rules.",
+    "Take YES or NO positions on AI models, benchmarks, and industry milestones. A live order book, virtual credits, and public resolution rules.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
