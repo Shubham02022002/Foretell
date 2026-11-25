@@ -3,13 +3,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@/app/generated/prisma/client";
 import { auth } from "@/auth";
 import { requireAdmin } from "@/lib/auth/authorization";
-import { sampleHistory } from "@/lib/market-history";
+import { getMarketStatsMap, type MarketStats } from "@/lib/exchange/market";
 import {
   marketQuerySchema,
   marketCreationSchema,
 } from "@/lib/validations/market";
 
-const MOVER_WINDOW_MS = 24 * 60 * 60 * 1000;
+const EMPTY_STATS: MarketStats = {
+  lastPrice: null,
+  bestBid: null,
+  bestAsk: null,
+  mid: null,
+  spread: null,
+  volume24h: 0,
+  trades24h: 0,
+  openInterest: 0,
+  change24h: null,
+  spark: [],
+};
 
 export async function GET(request: NextRequest) {
   try {
@@ -83,18 +94,7 @@ export async function GET(request: NextRequest) {
     ]);
 
     const marketIds = matchingMarkets.map((market) => market.id);
-    const marketBets = marketIds.length
-      ? await prisma.bet.findMany({
-          where: { marketId: { in: marketIds } },
-          orderBy: { createdAt: "asc" },
-          select: {
-            marketId: true,
-            outcome: true,
-            amount: true,
-            createdAt: true,
-          },
-        })
-      : [];
+    const statsByMarket = await getMarketStatsMap(prisma, marketIds);
 
     const watchedIds = new Set<string>();
 
@@ -109,67 +109,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const cutoff = Date.now() - MOVER_WINDOW_MS;
-    const poolByMarket = new Map<
-      string,
-      {
-        yes: number;
-        no: number;
-        spark: number[];
-        baseline: number | null;
-        latest: number | null;
-      }
-    >();
-
-    for (const bet of marketBets) {
-      const entry = poolByMarket.get(bet.marketId) ?? {
-        yes: 0,
-        no: 0,
-        spark: [],
-        baseline: null,
-        latest: null,
-      };
-
-      if (bet.outcome === "YES") {
-        entry.yes += bet.amount;
-      } else {
-        entry.no += bet.amount;
-      }
-
-      const total = entry.yes + entry.no;
-      const percentage = (entry.yes / total) * 100;
-
-      if (entry.baseline === null || bet.createdAt.getTime() <= cutoff) {
-        entry.baseline = percentage;
-      }
-      entry.latest = percentage;
-      entry.spark.push(percentage);
-      poolByMarket.set(bet.marketId, entry);
-    }
-
     const enriched = matchingMarkets.map((market) => {
-      const entry = poolByMarket.get(market.id);
-      const yes = entry?.yes ?? 0;
-      const no = entry?.no ?? 0;
-      const total = yes + no;
-      const spark =
-        entry && entry.spark.length >= 2 ? sampleHistory(entry.spark, 24) : [];
-      const movement =
-        entry?.baseline != null && entry.latest != null
-          ? Math.abs(entry.latest - entry.baseline)
-          : 0;
+      const stats = statsByMarket.get(market.id) ?? EMPTY_STATS;
 
       return {
         ...market,
-        pool: {
-          yes,
-          no,
-          total,
-          yesPercentage: total === 0 ? 0 : (yes / total) * 100,
-          noPercentage: total === 0 ? 0 : (no / total) * 100,
-        },
-        spark,
-        movement,
+        stats,
+        spark: stats.spark,
+        movement: Math.abs(stats.change24h ?? 0),
         watched: watchedIds.has(market.id),
       };
     });
@@ -177,11 +124,14 @@ export async function GET(request: NextRequest) {
     enriched.sort((a, b) => {
       switch (sort) {
         case "volume":
-          return b.pool.total - a.pool.total;
+          return (
+            b.stats.volume24h - a.stats.volume24h ||
+            b.stats.openInterest - a.stats.openInterest
+          );
         case "closing":
           return a.closesAt.getTime() - b.closesAt.getTime();
         case "movers":
-          return b.movement - a.movement || b.pool.total - a.pool.total;
+          return b.movement - a.movement || b.stats.volume24h - a.stats.volume24h;
         default:
           return b.createdAt.getTime() - a.createdAt.getTime();
       }
@@ -190,14 +140,14 @@ export async function GET(request: NextRequest) {
     const totalMarkets = enriched.length;
     const totalPages = Math.ceil(totalMarkets / limit);
     const safePage = Math.min(page, Math.max(1, totalPages));
-    const marketsWithPools = enriched.slice(
+    const marketsWithStats = enriched.slice(
       (safePage - 1) * limit,
       safePage * limit,
     );
 
     return NextResponse.json(
       {
-        markets: marketsWithPools,
+        markets: marketsWithStats,
         categories: categoryRows.map((row) => row.category),
         pagination: {
           page: safePage,
@@ -250,7 +200,7 @@ export async function POST(request: NextRequest) {
     }
     const { slug, question, description, category, closesAt, rules } =
       result.data;
-      
+
     const isExistingMarket = await prisma.market.findUnique({
       where: {
         slug,
