@@ -4,33 +4,60 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { SideChip, StatusPill } from "@/components/market-ui";
-import { formatCredits, formatDate } from "@/lib/format";
+import { formatCents, formatCredits, formatDate } from "@/lib/format";
 
 type Wallet = {
   balance: number;
+  reserved: number;
+  available: number;
   updatedAt: string;
 };
 
-type Bet = {
+type PositionMarket = {
+  slug: string;
+  question: string;
+  category: string;
+  status: string;
+  closesAt: string;
+};
+
+type Position = {
   id: string;
+  market: PositionMarket;
+  yesShares: number;
+  noShares: number;
+  yesReserved: number;
+  noReserved: number;
+  avgYesPrice: number | null;
+  avgNoPrice: number | null;
+  markPrice: number | null;
+  marketValue: number;
+  costBasis: number;
+  unrealized: number;
+  realized: number;
+};
+
+type OpenOrder = {
+  id: string;
+  market: PositionMarket;
   outcome: "YES" | "NO";
-  amount: number;
+  action: "BUY" | "SELL";
+  type: "LIMIT" | "MARKET";
+  price: number;
+  quantity: number;
+  filledQuantity: number;
+  remaining: number;
+  status: string;
   createdAt: string;
-  potentialPayout: number | null;
-  multiplier: number | null;
-  market: {
-    slug: string;
-    question: string;
-    status: string;
-    closesAt: string;
-  };
 };
 
 type Summary = {
   realizedNet: number;
-  atStake: number;
-  potentialPayout: number;
-  openBets: number;
+  marketValue: number;
+  costBasis: number;
+  unrealized: number;
+  openPositions: number;
+  openOrders: number;
 };
 
 type LedgerEntry = {
@@ -39,58 +66,76 @@ type LedgerEntry = {
   type: string;
   createdAt: string;
   marketId: string | null;
-  betId: string | null;
+  orderId: string | null;
+  tradeId: string | null;
   market: { slug: string; question: string } | null;
 };
 
 const LEDGER_LABELS: Record<string, string> = {
   INITIAL_CREDIT: "Welcome credits",
-  BET_STAKE: "Bet stake",
-  BET_PAYOUT: "Payout",
+  TRADE_BUY: "Bought shares",
+  TRADE_SELL: "Sold shares",
+  SETTLEMENT_PAYOUT: "Settlement payout",
   REFUND: "Refund",
-  POSITION_SALE: "Position sale",
   ADMIN_ADJUSTMENT: "Adjustment",
+  BET_STAKE: "Legacy stake",
+  BET_PAYOUT: "Legacy payout",
+  POSITION_SALE: "Legacy sale",
 };
+
+function signedCredits(value: number) {
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatCredits(Math.abs(value))}`;
+}
 
 export default function PortfolioPage() {
   const { data: session, status: sessionStatus } = useSession();
 
   const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [bets, setBets] = useState<Bet[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [orders, setOrders] = useState<OpenOrder[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mounted, setMounted] = useState(false);
-  const [sellingId, setSellingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   const loadPortfolio = useCallback(async () => {
-    setLoading(true);
     setError("");
 
     try {
-      const [walletResponse, betsResponse, ledgerResponse] = await Promise.all([
-        fetch("/api/wallet"),
-        fetch("/api/bets/me?limit=50"),
-        fetch("/api/wallet/ledger?limit=20"),
-      ]);
+      const [walletResponse, portfolioResponse, ledgerResponse] =
+        await Promise.all([
+          fetch("/api/wallet"),
+          fetch("/api/positions/me"),
+          fetch("/api/wallet/ledger?limit=20"),
+        ]);
 
-      if (!walletResponse.ok || !betsResponse.ok || !ledgerResponse.ok) {
+      if (
+        !walletResponse.ok ||
+        !portfolioResponse.ok ||
+        !ledgerResponse.ok
+      ) {
         throw new Error("Unable to load your portfolio.");
       }
 
       const walletData = await walletResponse.json();
-      const betsData = await betsResponse.json();
+      const portfolioData = await portfolioResponse.json();
       const ledgerData = await ledgerResponse.json();
 
       setWallet(walletData.wallet);
-      setBets(betsData.bets);
-      setSummary(betsData.summary ?? null);
-      setEntries(ledgerData.entries);
+      setPositions(
+        Array.isArray(portfolioData.positions) ? portfolioData.positions : [],
+      );
+      setOrders(
+        Array.isArray(portfolioData.orders) ? portfolioData.orders : [],
+      );
+      setSummary(portfolioData.summary ?? null);
+      setEntries(Array.isArray(ledgerData.entries) ? ledgerData.entries : []);
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -115,34 +160,34 @@ export default function PortfolioPage() {
     void loadPortfolio();
   }, [sessionStatus, loadPortfolio]);
 
-  async function handleSell(bet: Bet) {
-    if (sellingId) {
+  async function handleCancel(orderId: string) {
+    if (cancellingId) {
       return;
     }
 
-    setSellingId(bet.id);
+    setCancellingId(orderId);
     setError("");
 
     try {
-      const response = await fetch(`/api/bets/${bet.id}/sell`, {
+      const response = await fetch(`/api/orders/${orderId}/cancel`, {
         method: "POST",
       });
       const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(payload?.error ?? "Unable to sell this position.");
+        throw new Error(payload?.error ?? "Unable to cancel this order.");
       }
 
       window.dispatchEvent(new Event("wallet:updated"));
       await loadPortfolio();
-    } catch (sellError) {
+    } catch (cancelError) {
       setError(
-        sellError instanceof Error
-          ? sellError.message
-          : "Unable to sell this position.",
+        cancelError instanceof Error
+          ? cancelError.message
+          : "Unable to cancel this order.",
       );
     } finally {
-      setSellingId(null);
+      setCancellingId(null);
     }
   }
 
@@ -171,8 +216,8 @@ export default function PortfolioPage() {
               See your balance, positions, and ledger.
             </h2>
             <p className="mt-3 text-sm leading-6 text-muted">
-              Your account keeps every bet and credit movement in one place, so
-              you always know where you stand.
+              Your account keeps every order, fill, and credit movement in one
+              place, so you always know where you stand.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link
@@ -193,8 +238,6 @@ export default function PortfolioPage() {
       </main>
     );
   }
-
-  const openPositions = summary?.openBets ?? 0;
 
   return (
     <main>
@@ -250,10 +293,47 @@ export default function PortfolioPage() {
               Available credits
             </dt>
             <dd className="mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em]">
-              {wallet ? formatCredits(wallet.balance) : "—"}
+              {wallet ? formatCredits(wallet.available) : "—"}
             </dd>
             <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-              Ready to stake
+              {wallet
+                ? `${formatCredits(wallet.reserved)} cr in orders`
+                : "Ready to trade"}
+            </p>
+          </div>
+
+          <div className="bg-surface p-5 sm:p-6">
+            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+              Position value
+            </dt>
+            <dd className="mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em]">
+              {loading || !summary
+                ? "—"
+                : formatCredits(summary.marketValue)}
+            </dd>
+            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
+              Marked at the last trade
+            </p>
+          </div>
+
+          <div className="bg-surface p-5 sm:p-6">
+            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+              Unrealized P&amp;L
+            </dt>
+            <dd
+              className={`mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em] ${
+                !summary || summary.unrealized === 0
+                  ? "text-ink"
+                  : summary.unrealized > 0
+                    ? "text-yes"
+                    : "text-no"
+              }`}
+            >
+              {loading || !summary ? "—" : signedCredits(summary.unrealized)}
+            </dd>
+            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
+              {summary?.openPositions ?? 0}{" "}
+              {summary?.openPositions === 1 ? "open position" : "open positions"}
             </p>
           </div>
 
@@ -270,41 +350,10 @@ export default function PortfolioPage() {
                     : "text-no"
               }`}
             >
-              {loading
-                ? "—"
-                : summary
-                  ? `${summary.realizedNet > 0 ? "+" : summary.realizedNet < 0 ? "−" : ""}${formatCredits(Math.abs(summary.realizedNet))}`
-                  : "—"}
+              {loading || !summary ? "—" : signedCredits(summary.realizedNet)}
             </dd>
             <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-              Settled markets
-            </p>
-          </div>
-
-          <div className="bg-surface p-5 sm:p-6">
-            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-              At stake
-            </dt>
-            <dd className="mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em]">
-              {loading || !summary ? "—" : formatCredits(summary.atStake)}
-            </dd>
-            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-              Across {openPositions}{" "}
-              {openPositions === 1 ? "open position" : "open positions"}
-            </p>
-          </div>
-
-          <div className="bg-surface p-5 sm:p-6">
-            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-              Potential payout
-            </dt>
-            <dd className="mt-2 font-display text-4xl font-semibold leading-none tracking-[-0.03em]">
-              {loading || !summary
-                ? "—"
-                : formatCredits(summary.potentialPayout)}
-            </dd>
-            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-              If every open pick wins
+              Closed trades and settlements
             </p>
           </div>
         </dl>
@@ -315,7 +364,7 @@ export default function PortfolioPage() {
               Positions
             </h2>
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-              {loading ? "Loading" : `${bets.length} bets`}
+              {loading ? "Loading" : `${positions.length} open`}
             </span>
           </div>
 
@@ -328,14 +377,14 @@ export default function PortfolioPage() {
                 </div>
               ))}
             </div>
-          ) : bets.length === 0 ? (
+          ) : positions.length === 0 ? (
             <div className="border-b border-line py-12">
               <p className="font-display text-xl font-medium">
-                No positions yet.
+                No open positions.
               </p>
               <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                Find a question you have a view on and take a side. Your open
-                bets will show up here.
+                Find a question you have a view on and buy YES or NO shares. Open
+                positions will show up here.
               </p>
               <Link
                 href="/markets"
@@ -346,67 +395,166 @@ export default function PortfolioPage() {
             </div>
           ) : (
             <div>
-              {bets.map((bet) => {
-                const sellable =
-                  bet.market.status === "OPEN" &&
-                  new Date(bet.market.closesAt).getTime() > Date.now();
-
-                return (
-                  <div
-                    key={bet.id}
-                    className="grid gap-3 border-b border-line py-5 sm:grid-cols-[minmax(0,1fr)_80px_160px_150px_120px] sm:items-center"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <StatusPill status={bet.market.status} />
-                        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                          Closes {formatDate(bet.market.closesAt)}
-                        </span>
-                      </div>
-                      <Link
-                        href={`/markets/${bet.market.slug}`}
-                        className="mt-2 block max-w-[56ch] font-display text-[17px] font-medium leading-snug tracking-[-0.01em] text-ink transition-colors hover:text-accent"
-                      >
-                        {bet.market.question}
-                      </Link>
+              {positions.map((position) => (
+                <div
+                  key={position.id}
+                  className="grid gap-4 border-b border-line py-5 sm:grid-cols-[minmax(0,1fr)_200px_170px_120px] sm:items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusPill status={position.market.status} />
+                      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
+                        Closes {formatDate(position.market.closesAt)}
+                      </span>
                     </div>
+                    <Link
+                      href={`/markets/${position.market.slug}`}
+                      className="mt-2 block max-w-[56ch] font-display text-[17px] font-medium leading-snug tracking-[-0.01em] text-ink transition-colors hover:text-accent"
+                    >
+                      {position.market.question}
+                    </Link>
+                  </div>
 
-                    <div className="flex items-center gap-3 sm:contents">
+                  <div className="flex flex-wrap gap-x-4 gap-y-2">
+                    {position.yesShares > 0 && (
                       <div>
-                        <SideChip side={bet.outcome} />
-                      </div>
-                      <div>
-                        <p className="font-mono text-sm text-ink">
-                          {formatCredits(bet.amount)} cr
+                        <div className="flex items-center gap-2">
+                          <SideChip side="YES" />
+                          <span className="font-mono text-sm text-ink">
+                            {formatCredits(position.yesShares)}
+                          </span>
+                        </div>
+                        <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
+                          Avg{" "}
+                          {position.avgYesPrice === null
+                            ? "—"
+                            : `${position.avgYesPrice}¢`}{" "}
+                          · Mark{" "}
+                          {position.markPrice === null
+                            ? "—"
+                            : formatCents(position.markPrice)}
                         </p>
-                        {bet.potentialPayout !== null && (
-                          <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
-                            ≈ {formatCredits(bet.potentialPayout)} cr if{" "}
-                            {bet.outcome} wins
-                          </p>
-                        )}
                       </div>
-                    </div>
-
-                    <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted sm:text-right">
-                      Placed {formatDate(bet.createdAt)}
-                    </p>
-
-                    {sellable ? (
-                      <button
-                        type="button"
-                        onClick={() => handleSell(bet)}
-                        disabled={sellingId !== null}
-                        className="justify-self-start border border-line-strong px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors hover:border-ink hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-50 sm:justify-self-end"
-                      >
-                        {sellingId === bet.id ? "Selling…" : "Sell"}
-                      </button>
-                    ) : (
-                      <span aria-hidden="true" className="hidden sm:block" />
+                    )}
+                    {position.noShares > 0 && (
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <SideChip side="NO" />
+                          <span className="font-mono text-sm text-ink">
+                            {formatCredits(position.noShares)}
+                          </span>
+                        </div>
+                        <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
+                          Avg{" "}
+                          {position.avgNoPrice === null
+                            ? "—"
+                            : `${position.avgNoPrice}¢`}{" "}
+                          · Mark{" "}
+                          {position.markPrice === null
+                            ? "—"
+                            : formatCents(100 - position.markPrice)}
+                        </p>
+                      </div>
                     )}
                   </div>
-                );
-              })}
+
+                  <div className="sm:text-right">
+                    <p className="font-mono text-sm text-ink">
+                      {formatCredits(Math.round(position.marketValue))} cr
+                    </p>
+                    <p
+                      className={`mt-0.5 font-mono text-[10px] ${
+                        position.unrealized >= 0 ? "text-yes" : "text-no"
+                      }`}
+                    >
+                      {signedCredits(Math.round(position.unrealized))} unrealized
+                    </p>
+                  </div>
+
+                  <Link
+                    href={`/markets/${position.market.slug}`}
+                    className="justify-self-start border border-line-strong px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors hover:border-ink hover:bg-ink hover:text-paper sm:justify-self-end"
+                  >
+                    Trade
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="mt-12">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-ink pb-3">
+            <h2 className="font-display text-2xl font-semibold tracking-[-0.02em]">
+              Open orders
+            </h2>
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+              {loading ? "Loading" : `${orders.length} resting`}
+            </span>
+          </div>
+
+          {loading ? (
+            <div aria-hidden="true">
+              {Array.from({ length: 2 }).map((_, index) => (
+                <div key={index} className="border-b border-line py-4">
+                  <div className="h-4 w-1/2 animate-pulse bg-line" />
+                </div>
+              ))}
+            </div>
+          ) : orders.length === 0 ? (
+            <div className="border-b border-line py-10">
+              <p className="text-sm text-muted">
+                No resting orders. Limit orders that do not fill immediately
+                appear here.
+              </p>
+            </div>
+          ) : (
+            <div>
+              {orders.map((order) => (
+                <div
+                  key={order.id}
+                  className="grid gap-2 border-b border-line py-4 sm:grid-cols-[minmax(0,1fr)_180px_110px_110px_100px] sm:items-center sm:gap-4"
+                >
+                  <Link
+                    href={`/markets/${order.market.slug}`}
+                    className="min-w-0 truncate text-sm text-ink transition-colors hover:text-accent"
+                  >
+                    {order.market.question}
+                  </Link>
+
+                  <p className="font-mono text-[11px]">
+                    <span
+                      className={
+                        order.action === "BUY" ? "text-yes" : "text-no"
+                      }
+                    >
+                      {order.action}
+                    </span>{" "}
+                    <span className="text-ink">{order.outcome}</span>{" "}
+                    <span className="text-muted">
+                      @ {formatCents(order.price)}
+                    </span>
+                  </p>
+
+                  <p className="font-mono text-[10px] text-muted">
+                    {formatCredits(order.filledQuantity)} /{" "}
+                    {formatCredits(order.quantity)}
+                  </p>
+
+                  <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+                    {order.status.toLowerCase()}
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => handleCancel(order.id)}
+                    disabled={cancellingId !== null}
+                    className="justify-self-start border border-line-strong px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors hover:border-ink hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:opacity-50 sm:justify-self-end"
+                  >
+                    {cancellingId === order.id ? "Cancelling…" : "Cancel"}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </section>
@@ -435,7 +583,7 @@ export default function PortfolioPage() {
                 No credit movements yet.
               </p>
               <p className="mt-2 text-sm text-muted">
-                Stakes, payouts, and refunds will appear here.
+                Fills, payouts, and refunds will appear here.
               </p>
             </div>
           ) : (
