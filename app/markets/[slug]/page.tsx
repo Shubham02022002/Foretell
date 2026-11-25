@@ -3,16 +3,30 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { ProbabilityBar, StatusPill } from "@/components/market-ui";
-import { MarketDiscussion } from "@/components/market-discussion";
-import { ProbabilityChart } from "@/components/probability-chart";
-import type { HistoryPoint } from "@/lib/market-history";
 import {
-  formatCents,
-  formatCredits,
-  formatDate,
-} from "@/lib/format";
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { StatusPill } from "@/components/market-ui";
+import { MarketDiscussion } from "@/components/market-discussion";
+import {
+  OrderBook,
+  TradeTape,
+  type BookData,
+  type BookView,
+  type TradeTapeItem,
+} from "@/components/order-book";
+import {
+  PriceChart,
+  type CandleInput,
+  type ChartMode,
+  type ChartRange,
+} from "@/components/probability-chart";
+import { formatCents, formatCredits, formatDate } from "@/lib/format";
 
 type MarketDetail = {
   id: string;
@@ -33,15 +47,77 @@ type MarketDetail = {
   } | null;
 };
 
-type Pool = {
-  yes: number;
-  no: number;
-  total: number;
-  yesPercentage: number;
-  noPercentage: number;
+type MarketStats = {
+  lastPrice: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  mid: number | null;
+  spread: number | null;
+  volume24h: number;
+  trades24h: number;
+  openInterest: number;
+  change24h: number | null;
+  spark: number[];
 };
 
 type Outcome = "YES" | "NO";
+type Action = "BUY" | "SELL";
+type OrderType = "LIMIT" | "MARKET";
+
+type Position = {
+  id: string;
+  yesShares: number;
+  noShares: number;
+  yesReserved: number;
+  noReserved: number;
+  avgYesPrice: number | null;
+  avgNoPrice: number | null;
+  markPrice: number | null;
+  marketValue: number;
+  costBasis: number;
+  unrealized: number;
+};
+
+type OpenOrder = {
+  id: string;
+  outcome: Outcome;
+  action: Action;
+  type: OrderType;
+  price: number;
+  quantity: number;
+  filledQuantity: number;
+  remaining: number;
+  status: string;
+  createdAt: string;
+};
+
+type WalletState = {
+  balance: number;
+  reserved: number;
+  available: number;
+};
+
+const EMPTY_BOOK: BookData = {
+  bids: [],
+  asks: [],
+  bestBid: null,
+  bestAsk: null,
+  mid: null,
+  spread: null,
+};
+
+const EMPTY_STATS: MarketStats = {
+  lastPrice: null,
+  bestBid: null,
+  bestAsk: null,
+  mid: null,
+  spread: null,
+  volume24h: 0,
+  trades24h: 0,
+  openInterest: 0,
+  change24h: null,
+  spark: [],
+};
 
 function MarketSkeleton() {
   return (
@@ -50,7 +126,7 @@ function MarketSkeleton() {
       <div className="mt-8 h-4 w-40 animate-pulse bg-line" />
       <div className="mt-4 h-12 w-3/4 animate-pulse bg-line" />
       <div className="mt-10 grid gap-6 lg:grid-cols-[1.35fr_1fr]">
-        <div className="h-64 animate-pulse border border-line bg-surface" />
+        <div className="h-96 animate-pulse border border-line bg-surface" />
         <div className="h-96 animate-pulse border border-line bg-surface" />
       </div>
     </main>
@@ -71,31 +147,43 @@ function MarketPageContent() {
   const { status: sessionStatus } = useSession();
 
   const [market, setMarket] = useState<MarketDetail | null>(null);
-  const [pool, setPool] = useState<Pool | null>(null);
-  const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [stats, setStats] = useState<MarketStats>(EMPTY_STATS);
+  const [book, setBook] = useState<BookData>(EMPTY_BOOK);
+  const [trades, setTrades] = useState<TradeTapeItem[]>([]);
+  const [candles, setCandles] = useState<CandleInput[]>([]);
+  const [range, setRange] = useState<ChartRange>("1W");
+  const [chartMode, setChartMode] = useState<ChartMode>("line");
+  const [chartLoading, setChartLoading] = useState(true);
+
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [mounted, setMounted] = useState(false);
 
+  const [wallet, setWallet] = useState<WalletState | null>(null);
+  const [position, setPosition] = useState<Position | null>(null);
+  const [orders, setOrders] = useState<OpenOrder[]>([]);
+
+  const [bookView, setBookView] = useState<BookView>("YES");
   const [outcome, setOutcome] = useState<Outcome>("YES");
-  const [amount, setAmount] = useState("");
-  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [action, setAction] = useState<Action>("BUY");
+  const [orderType, setOrderType] = useState<OrderType>("LIMIT");
+  const [price, setPrice] = useState("50");
+  const [quantity, setQuantity] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const priceTouched = useRef(false);
+
   const [watched, setWatched] = useState(false);
   const [watchPending, setWatchPending] = useState(false);
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  const loadMarket = useCallback(async () => {
+  const loadMeta = useCallback(async () => {
     try {
-      const [response, historyResponse] = await Promise.all([
-        fetch(`/api/markets/${slug}`),
-        fetch(`/api/markets/${slug}/history`).catch(() => null),
-      ]);
+      const response = await fetch(`/api/markets/${slug}`);
       const data = await response.json();
 
       if (!response.ok) {
@@ -103,17 +191,8 @@ function MarketPageContent() {
       }
 
       setMarket(data.market);
-      setPool(data.pool);
+      setStats(data.stats ?? EMPTY_STATS);
       setWatched(Boolean(data.market.watched));
-
-      if (historyResponse?.ok) {
-        const historyData = await historyResponse.json().catch(() => null);
-        setHistory(
-          Array.isArray(historyData?.history) ? historyData.history : [],
-        );
-      } else {
-        setHistory([]);
-      }
     } catch (error) {
       setLoadError(
         error instanceof Error ? error.message : "Unable to load market.",
@@ -123,45 +202,442 @@ function MarketPageContent() {
     }
   }, [slug]);
 
-  useEffect(() => {
-    loadMarket();
-  }, [loadMarket]);
+  const loadBook = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/markets/${slug}/book`);
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      setBook(data.book ?? EMPTY_BOOK);
+      setStats(data.stats ?? EMPTY_STATS);
+      setTrades(Array.isArray(data.trades) ? data.trades : []);
 
-  useEffect(() => {
-    if (sessionStatus !== "authenticated") {
-      setWalletBalance(null);
-      return;
+      if (!priceTouched.current && data.stats?.bestAsk != null) {
+        setPrice(String(data.stats.bestAsk));
+      }
+      setMarket((current) =>
+        current && data.market
+          ? { ...current, status: data.market.status }
+          : current,
+      );
+    } catch {
+      // The book is refreshed on the next poll.
     }
+  }, [slug]);
 
-    let cancelled = false;
-
-    async function loadWallet() {
+  const loadCandles = useCallback(
+    async (nextRange: ChartRange) => {
+      setChartLoading(true);
       try {
-        const response = await fetch("/api/wallet");
+        const response = await fetch(
+          `/api/markets/${slug}/candles?range=${nextRange}`,
+        );
         if (!response.ok) {
           return;
         }
         const data = await response.json();
-        if (!cancelled) {
-          setWalletBalance(data.wallet.balance);
-        }
+        setCandles(Array.isArray(data.candles) ? data.candles : []);
       } catch {
-        // Balance is displayed opportunistically; the bet endpoint enforces it.
+        setCandles([]);
+      } finally {
+        setChartLoading(false);
       }
+    },
+    [slug],
+  );
+
+  const loadAccount = useCallback(async () => {
+    if (sessionStatus !== "authenticated") {
+      setWallet(null);
+      setPosition(null);
+      setOrders([]);
+      return;
     }
 
-    loadWallet();
+    try {
+      const [walletResponse, positionsResponse] = await Promise.all([
+        fetch("/api/wallet"),
+        fetch(`/api/positions/me?market=${slug}`),
+      ]);
 
-    return () => {
-      cancelled = true;
+      if (walletResponse.ok) {
+        const data = await walletResponse.json();
+        setWallet(data.wallet);
+      }
+
+      if (positionsResponse.ok) {
+        const data = await positionsResponse.json();
+        setPosition(
+          Array.isArray(data.positions) && data.positions.length > 0
+            ? data.positions[0]
+            : null,
+        );
+        setOrders(Array.isArray(data.orders) ? data.orders : []);
+      }
+    } catch {
+      // Account data is opportunistic; order endpoints enforce balances.
+    }
+  }, [sessionStatus, slug]);
+
+  useEffect(() => {
+    void loadMeta();
+    void loadBook();
+  }, [loadMeta, loadBook]);
+
+  useEffect(() => {
+    void loadCandles(range);
+  }, [loadCandles, range]);
+
+  useEffect(() => {
+    void loadAccount();
+  }, [loadAccount]);
+
+  useEffect(() => {
+    let tick = 0;
+
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      tick += 1;
+      void loadBook();
+      void loadAccount();
+
+      if (tick % 4 === 0) {
+        void loadMeta();
+        void loadCandles(range);
+      }
+    }, 5_000);
+
+    return () => clearInterval(interval);
+  }, [loadBook, loadAccount, loadMeta, loadCandles, range]);
+
+  const viewStatus = mounted ? sessionStatus : "loading";
+  const isPastClose = market ? new Date(market.closesAt) <= new Date() : false;
+  const canTrade =
+    viewStatus === "authenticated" &&
+    market?.status === "OPEN" &&
+    !isPastClose;
+
+  const heldYes = position
+    ? Math.max(0, position.yesShares - position.yesReserved)
+    : 0;
+  const heldNo = position
+    ? Math.max(0, position.noShares - position.noReserved)
+    : 0;
+  const heldShares = outcome === "YES" ? heldYes : heldNo;
+
+  const numericPrice = Number(price);
+  const numericQuantity = Number(quantity);
+  const validPrice =
+    orderType === "MARKET" ||
+    (Number.isInteger(numericPrice) &&
+      numericPrice >= 1 &&
+      numericPrice <= 99);
+  const validQuantity =
+    Number.isInteger(numericQuantity) && numericQuantity > 0;
+
+  const estimate = useMemo(() => {
+    if (!validQuantity) {
+      return null;
+    }
+
+    if (orderType === "LIMIT") {
+      if (!validPrice) {
+        return null;
+      }
+
+      return {
+        notional: numericPrice * numericQuantity,
+        shares: numericQuantity,
+        averagePrice: numericPrice,
+        remainder: 0,
+      };
+    }
+
+    const levels =
+      action === "BUY"
+        ? outcome === "YES"
+          ? [...book.asks].sort((a, b) => a.price - b.price)
+          : [...book.bids].sort((a, b) => b.price - a.price)
+        : outcome === "YES"
+          ? [...book.bids].sort((a, b) => b.price - a.price)
+          : [...book.asks].sort((a, b) => a.price - b.price);
+
+    let remaining = numericQuantity;
+    let notional = 0;
+    let filled = 0;
+
+    for (const level of levels) {
+      if (remaining <= 0) {
+        break;
+      }
+
+      const unitPrice =
+        outcome === "YES" ? level.price : 100 - level.price;
+      const filledHere = Math.min(remaining, level.size);
+      notional += unitPrice * filledHere;
+      filled += filledHere;
+      remaining -= filledHere;
+    }
+
+    return {
+      notional,
+      shares: filled,
+      averagePrice: filled > 0 ? notional / filled : 0,
+      remainder: remaining,
     };
-  }, [sessionStatus]);
+  }, [
+    action,
+    book.asks,
+    book.bids,
+    numericPrice,
+    numericQuantity,
+    orderType,
+    outcome,
+    validPrice,
+    validQuantity,
+  ]);
+
+  const referencePrice =
+    action === "BUY"
+      ? outcome === "YES"
+        ? stats.bestAsk
+        : stats.bestBid !== null
+          ? 100 - stats.bestBid
+          : null
+      : outcome === "YES"
+        ? stats.bestBid
+        : stats.bestAsk !== null
+          ? 100 - stats.bestAsk
+          : null;
+
+  function chooseOutcome(nextOutcome: Outcome) {
+    priceTouched.current = true;
+    setOutcome(nextOutcome);
+    setFormError("");
+    setSuccessMessage("");
+
+    const nextBuy =
+      nextOutcome === "YES"
+        ? stats.bestAsk
+        : stats.bestBid !== null
+          ? 100 - stats.bestBid
+          : null;
+    const nextSell =
+      nextOutcome === "YES"
+        ? stats.bestBid
+        : stats.bestAsk !== null
+          ? 100 - stats.bestAsk
+          : null;
+    const nextPrice = action === "BUY" ? nextBuy : nextSell;
+
+    if (orderType === "LIMIT" && nextPrice !== null) {
+      setPrice(String(nextPrice));
+    }
+  }
+
+  function chooseAction(nextAction: Action) {
+    priceTouched.current = true;
+    setAction(nextAction);
+    setFormError("");
+    setSuccessMessage("");
+
+    const nextPrice =
+      nextAction === "BUY"
+        ? outcome === "YES"
+          ? stats.bestAsk
+          : stats.bestBid !== null
+            ? 100 - stats.bestBid
+            : null
+        : outcome === "YES"
+          ? stats.bestBid
+          : stats.bestAsk !== null
+            ? 100 - stats.bestAsk
+            : null;
+
+    if (orderType === "LIMIT" && nextPrice !== null) {
+      setPrice(String(nextPrice));
+    }
+  }
+
+  function chooseOrderType(nextType: OrderType) {
+    priceTouched.current = true;
+    setOrderType(nextType);
+    setFormError("");
+    setSuccessMessage("");
+
+    if (nextType === "LIMIT" && referencePrice !== null) {
+      setPrice(String(referencePrice));
+    }
+  }
+
+  function handleBookSelect(side: "bid" | "ask", displayPrice: number) {
+    priceTouched.current = true;
+    setOutcome(bookView);
+    setAction(side === "ask" ? "BUY" : "SELL");
+    setOrderType("LIMIT");
+    setPrice(String(displayPrice));
+    setFormError("");
+    setSuccessMessage("");
+  }
+
+  async function handleSubmit() {
+    setFormError("");
+    setSuccessMessage("");
+
+    if (!validQuantity) {
+      setFormError("Enter a positive whole number of shares.");
+      return;
+    }
+
+    if (!validPrice) {
+      setFormError("Enter a limit price between 1 and 99 cents.");
+      return;
+    }
+
+    if (action === "SELL" && numericQuantity > heldShares) {
+      setFormError(
+        `You only have ${formatCredits(heldShares)} ${outcome} shares available to sell.`,
+      );
+      return;
+    }
+
+    if (
+      action === "BUY" &&
+      estimate &&
+      wallet &&
+      estimate.shares < numericQuantity
+    ) {
+      setFormError("There is not enough resting liquidity for that size.");
+      return;
+    }
+
+    if (
+      action === "BUY" &&
+      wallet &&
+      estimate &&
+      estimate.notional > wallet.available
+    ) {
+      setFormError("You do not have enough available credits.");
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      const response = await fetch(`/api/markets/${slug}/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          outcome,
+          action,
+          type: orderType,
+          ...(orderType === "LIMIT" ? { price: numericPrice } : {}),
+          quantity: numericQuantity,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setFormError(data?.error ?? "Unable to place order.");
+        return;
+      }
+
+      if (
+        data.order?.status === "FILLED" ||
+        data.order?.filledQuantity === numericQuantity
+      ) {
+        setSuccessMessage(
+          `${action} ${outcome} filled: ${formatCredits(numericQuantity)} shares.`,
+        );
+      } else if (data.order?.filledQuantity > 0) {
+        setSuccessMessage(
+          `${formatCredits(data.order.filledQuantity)} of ${formatCredits(
+            numericQuantity,
+          )} shares filled; the remainder is ${
+            data.order.status === "CANCELLED"
+              ? "cancelled"
+              : "resting on the book"
+          }.`,
+        );
+      } else if (data.selfCrossed) {
+        setSuccessMessage(
+          "Order cancelled — it would have crossed one of your own resting orders.",
+        );
+      } else if (orderType === "MARKET") {
+        setSuccessMessage("No resting liquidity at that size — nothing filled.");
+      } else {
+        setSuccessMessage("Order posted to the book.");
+      }
+
+      window.dispatchEvent(new Event("wallet:updated"));
+      setQuantity("");
+      await Promise.all([
+        loadBook(),
+        loadAccount(),
+        loadCandles(range),
+        loadMeta(),
+      ]);
+    } catch {
+      setFormError("Unable to place order. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleCancel(orderId: string) {
+    try {
+      const response = await fetch(`/api/orders/${orderId}/cancel`, {
+        method: "POST",
+      });
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setFormError(data?.error ?? "Unable to cancel order.");
+        return;
+      }
+
+      window.dispatchEvent(new Event("wallet:updated"));
+      await Promise.all([loadBook(), loadAccount()]);
+    } catch {
+      setFormError("Unable to cancel order.");
+    }
+  }
+
+  async function handleToggleWatch() {
+    if (watchPending || !market) {
+      return;
+    }
+
+    const nextWatched = !watched;
+    setWatched(nextWatched);
+    setWatchPending(true);
+
+    try {
+      const response = await fetch(`/api/watchlist/${market.slug}`, {
+        method: nextWatched ? "POST" : "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to update watchlist.");
+      }
+    } catch {
+      setWatched(!nextWatched);
+    } finally {
+      setWatchPending(false);
+    }
+  }
 
   if (loading) {
     return <MarketSkeleton />;
   }
 
-  if (loadError || !market || !pool) {
+  if (loadError || !market) {
     return (
       <main className="mx-auto w-full max-w-7xl px-4 py-12 sm:px-6">
         <div className="border border-no/30 bg-no-soft p-6 text-sm text-no">
@@ -177,100 +653,20 @@ function MarketPageContent() {
     );
   }
 
-  const hasPool = pool.total > 0;
-  const viewStatus = mounted ? sessionStatus : "loading";
-  const isPastClose = new Date(market.closesAt) <= new Date();
-  const canTrade =
-    viewStatus === "authenticated" &&
-    market.status === "OPEN" &&
-    !isPastClose;
-
-  const numericAmount = Number(amount);
-  const validAmount = Number.isInteger(numericAmount) && numericAmount > 0;
-
-  const winningPool = outcome === "YES" ? pool.yes : pool.no;
-  const projectedPool = pool.total + (validAmount ? numericAmount : 0);
-  const projectedWinningPool = winningPool + (validAmount ? numericAmount : 0);
-  const estimatedPayout =
-    validAmount && projectedWinningPool > 0
-      ? Math.floor((numericAmount * projectedPool) / projectedWinningPool)
+  const displayYes =
+    stats.lastPrice ??
+    (stats.mid !== null ? Math.round(stats.mid) : null);
+  const displayNo = displayYes === null ? null : 100 - displayYes;
+  const change = stats.change24h;
+  const canSubmit =
+    canTrade && validQuantity && validPrice && !submitting;
+  const maxBuyShares =
+    action === "BUY" && orderType === "LIMIT" && wallet
+      ? Math.floor(
+          wallet.available /
+            (outcome === "YES" ? numericPrice : 100 - numericPrice),
+        )
       : null;
-
-  const yesMultiplier = pool.yes > 0 ? (pool.total / pool.yes).toFixed(1) : null;
-  const noMultiplier = pool.no > 0 ? (pool.total / pool.no).toFixed(1) : null;
-
-  async function handleToggleWatch() {
-    if (watchPending) {
-      return;
-    }
-
-    const nextWatched = !watched;
-    setWatched(nextWatched);
-    setWatchPending(true);
-
-    try {
-      const response = await fetch(`/api/watchlist/${market!.slug}`, {
-        method: nextWatched ? "POST" : "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Unable to update watchlist.");
-      }
-    } catch {
-      setWatched(!nextWatched);
-    } finally {
-      setWatchPending(false);
-    }
-  }
-
-  async function handleBet() {
-    setFormError("");
-    setSuccessMessage("");
-
-    if (!validAmount) {
-      setFormError("Enter a positive whole number of credits.");
-      return;
-    }
-
-    if (walletBalance !== null && numericAmount > walletBalance) {
-      setFormError("You do not have enough credits for this bet.");
-      return;
-    }
-
-    setSubmitting(true);
-
-    try {
-      const response = await fetch(`/api/markets/${market!.slug}/bets`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          outcome,
-          amount: numericAmount,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        setFormError(data?.error ?? "Unable to place bet.");
-        return;
-      }
-
-      if (typeof data?.balance === "number") {
-        setWalletBalance(data.balance);
-      }
-
-      window.dispatchEvent(new Event("wallet:updated"));
-      setSuccessMessage(`Bet placed: ${numericAmount} credits on ${outcome}.`);
-      setAmount("");
-      await loadMarket();
-    } catch {
-      setFormError("Unable to place bet. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 pb-20 pt-8 sm:px-6">
@@ -329,12 +725,14 @@ function MarketPageContent() {
       <div className="mt-10 grid gap-6 lg:grid-cols-[1.35fr_1fr] lg:items-start lg:gap-8">
         <div className="space-y-6">
           <section className="border border-line bg-surface">
-            <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-3 sm:px-7">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3 sm:px-7">
               <h2 className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-                Market probability
+                Market price
               </h2>
               <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                {hasPool ? `${formatCredits(pool.total)} cr pooled` : "Awaiting first trade"}
+                {stats.lastPrice !== null
+                  ? `${formatCredits(stats.volume24h)} shares · 24h`
+                  : "Awaiting first trade"}
               </span>
             </div>
 
@@ -344,11 +742,16 @@ function MarketPageContent() {
                   Yes
                 </p>
                 <p className="mt-2 font-display text-5xl font-semibold leading-none tracking-[-0.04em] text-yes">
-                  {hasPool ? `${Math.round(pool.yesPercentage)}%` : "—"}
+                  {displayYes === null ? "—" : formatCents(displayYes)}
                 </p>
                 <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                  {hasPool ? formatCents(pool.yesPercentage) : "No price yet"} ·{" "}
-                  {formatCredits(pool.yes)} cr
+                  {displayYes === null
+                    ? "No price yet"
+                    : `${displayYes}% implied`}
+                </p>
+                <p className="mt-1 font-mono text-[10px] text-muted">
+                  Bid {stats.bestBid === null ? "—" : formatCents(stats.bestBid)} ·
+                  Ask {stats.bestAsk === null ? "—" : formatCents(stats.bestAsk)}
                 </p>
               </div>
 
@@ -357,31 +760,94 @@ function MarketPageContent() {
                   No
                 </p>
                 <p className="mt-2 font-display text-5xl font-semibold leading-none tracking-[-0.04em] text-no">
-                  {hasPool ? `${Math.round(pool.noPercentage)}%` : "—"}
+                  {displayNo === null ? "—" : formatCents(displayNo)}
                 </p>
                 <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                  {hasPool ? formatCents(pool.noPercentage) : "No price yet"} ·{" "}
-                  {formatCredits(pool.no)} cr
+                  {displayNo === null
+                    ? "No price yet"
+                    : `${displayNo}% implied`}
+                </p>
+                <p className="mt-1 font-mono text-[10px] text-muted">
+                  Bid{" "}
+                  {stats.bestAsk === null
+                    ? "—"
+                    : formatCents(100 - stats.bestAsk)}{" "}
+                  · Ask{" "}
+                  {stats.bestBid === null
+                    ? "—"
+                    : formatCents(100 - stats.bestBid)}
                 </p>
               </div>
             </div>
 
-            {history.length >= 2 && <ProbabilityChart points={history} />}
+            <PriceChart
+              candles={candles}
+              range={range}
+              onRangeChange={(nextRange) => setRange(nextRange)}
+              mode={chartMode}
+              onModeChange={setChartMode}
+              lastPrice={stats.lastPrice}
+              loading={chartLoading}
+            />
 
-            <div className="border-t border-line px-5 py-5 sm:px-7">
-              {hasPool ? (
-                <ProbabilityBar yes={pool.yesPercentage} className="h-2" />
-              ) : (
-                <div className="h-2 w-full bg-line" aria-hidden="true" />
-              )}
-
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                <span>{formatCredits(pool.yes)} cr on yes</span>
-                <span>{formatCredits(pool.total)} cr total pool</span>
-                <span>{formatCredits(pool.no)} cr on no</span>
+            <div className="grid grid-cols-2 gap-px border-t border-line bg-line sm:grid-cols-4">
+              <div className="bg-surface p-4">
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+                  Last
+                </p>
+                <p className="mt-1 font-mono text-sm text-ink">
+                  {stats.lastPrice === null
+                    ? "—"
+                    : formatCents(stats.lastPrice)}
+                </p>
+              </div>
+              <div className="bg-surface p-4">
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+                  24h change
+                </p>
+                <p
+                  className={`mt-1 font-mono text-sm ${
+                    change === null
+                      ? "text-ink"
+                      : change >= 0
+                        ? "text-yes"
+                        : "text-no"
+                  }`}
+                >
+                  {change === null
+                    ? "—"
+                    : `${change >= 0 ? "+" : ""}${change}¢`}
+                </p>
+              </div>
+              <div className="bg-surface p-4">
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+                  24h volume
+                </p>
+                <p className="mt-1 font-mono text-sm text-ink">
+                  {formatCredits(stats.volume24h)}
+                </p>
+              </div>
+              <div className="bg-surface p-4">
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+                  Open interest
+                </p>
+                <p className="mt-1 font-mono text-sm text-ink">
+                  {formatCredits(stats.openInterest)}
+                </p>
               </div>
             </div>
           </section>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <OrderBook
+              book={book}
+              view={bookView}
+              onViewChange={setBookView}
+              onSelect={handleBookSelect}
+              lastPrice={stats.lastPrice}
+            />
+            <TradeTape trades={trades} />
+          </div>
 
           {market.status === "RESOLVED" && market.resolution && (
             <section className="border border-accent/30 bg-accent-soft p-5 sm:p-7">
@@ -405,7 +871,7 @@ function MarketPageContent() {
                 >
                   {market.resolution.outcome}
                 </span>
-                .
+                . Winning shares paid 100 credits each.
               </p>
 
               {market.resolution.notes && (
@@ -436,7 +902,8 @@ function MarketPageContent() {
                 This market was voided.
               </p>
               <p className="mt-2 text-sm leading-6 text-muted">
-                Every stake was returned to its trader. No side was paid out.
+                Open orders were cancelled and positions were unwound at the
+                last traded price. No side was paid out at 100.
               </p>
             </section>
           )}
@@ -478,10 +945,10 @@ function MarketPageContent() {
               </dt>
               <dd className="mt-1.5 text-sm text-ink">
                 {market.status === "RESOLVED" && market.resolution
-                  ? market.resolution.outcome
+                  ? `${market.resolution.outcome} · 100 cr per share`
                   : market.status === "VOID"
-                    ? "Refunded"
-                    : "Pending"}
+                    ? "Unwound at last price"
+                    : "100 cr per winning share"}
               </dd>
             </div>
           </dl>
@@ -494,11 +961,11 @@ function MarketPageContent() {
         <aside className="border border-ink bg-surface lg:sticky lg:top-24">
           <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-4">
             <h2 className="font-display text-lg font-semibold tracking-[-0.01em]">
-              Take a position
+              Trade
             </h2>
-            {walletBalance !== null && (
+            {wallet && (
               <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                Bal {formatCredits(walletBalance)} cr
+                Available {formatCredits(wallet.available)} cr
               </span>
             )}
           </div>
@@ -507,7 +974,8 @@ function MarketPageContent() {
             {viewStatus === "unauthenticated" ? (
               <div>
                 <p className="text-sm leading-6 text-muted">
-                  Sign in to take a side with virtual credits.
+                  Sign in to post limit orders, take liquidity, and hold YES or
+                  NO shares.
                 </p>
                 <Link
                   href="/login"
@@ -515,198 +983,414 @@ function MarketPageContent() {
                 >
                   Sign in to trade
                 </Link>
-                <p className="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                  1,000 credits on signup
-                </p>
               </div>
             ) : !canTrade ? (
-              <div className="border border-line bg-paper p-4">
-                <p className="text-sm leading-6 text-ink">
-                  {market.status === "RESOLVED" && market.resolution
-                    ? `Trading is closed. This market resolved ${market.resolution.outcome}.`
-                    : market.status === "VOID"
-                      ? "Trading is closed. All stakes were refunded."
-                      : "Trading is closed for this market."}
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+                  {market.status === "OPEN" ? "Market closed" : market.status}
                 </p>
-                <Link
-                  href="/portfolio"
-                  className="mt-3 inline-block font-mono text-[10px] uppercase tracking-[0.12em] text-muted underline underline-offset-4 hover:text-ink"
-                >
-                  View your portfolio
-                </Link>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  {market.status === "RESOLVED"
+                    ? "This market has resolved. Positions have been settled."
+                    : market.status === "VOID"
+                      ? "This market was voided and positions were unwound."
+                      : "Trading is closed. Orders can no longer be placed."}
+                </p>
               </div>
             ) : (
-              <>
+              <div className="space-y-5">
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    aria-pressed={outcome === "YES"}
-                    onClick={() => setOutcome("YES")}
-                    className={`border px-4 py-3 text-left transition-colors ${
-                      outcome === "YES"
-                        ? "border-yes bg-yes text-white"
-                        : "border-line bg-paper text-yes hover:border-yes/50"
+                    onClick={() => chooseAction("BUY")}
+                    className={`border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${
+                      action === "BUY"
+                        ? "border-ink bg-ink text-paper"
+                        : "border-line text-muted hover:border-ink hover:text-ink"
                     }`}
                   >
-                    <span className="block font-mono text-[10px] uppercase tracking-[0.14em] opacity-80">
-                      Buy yes
-                    </span>
-                    <span className="mt-1 block font-display text-2xl font-semibold leading-none">
-                      {hasPool ? formatCents(pool.yesPercentage) : "—"}
-                    </span>
+                    Buy
                   </button>
-
                   <button
                     type="button"
-                    aria-pressed={outcome === "NO"}
-                    onClick={() => setOutcome("NO")}
-                    className={`border px-4 py-3 text-left transition-colors ${
-                      outcome === "NO"
-                        ? "border-no bg-no text-white"
-                        : "border-line bg-paper text-no hover:border-no/50"
+                    onClick={() => chooseAction("SELL")}
+                    className={`border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${
+                      action === "SELL"
+                        ? "border-ink bg-ink text-paper"
+                        : "border-line text-muted hover:border-ink hover:text-ink"
                     }`}
                   >
-                    <span className="block font-mono text-[10px] uppercase tracking-[0.14em] opacity-80">
-                      Buy no
-                    </span>
-                    <span className="mt-1 block font-display text-2xl font-semibold leading-none">
-                      {hasPool ? formatCents(pool.noPercentage) : "—"}
-                    </span>
+                    Sell
                   </button>
                 </div>
 
-                <label
-                  htmlFor="amount"
-                  className="mt-5 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted"
-                >
-                  Credits to stake
-                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["YES", "NO"] as const).map((entry) => {
+                    const entryPrice =
+                      action === "BUY"
+                        ? entry === "YES"
+                          ? stats.bestAsk
+                          : stats.bestBid !== null
+                            ? 100 - stats.bestBid
+                            : null
+                        : entry === "YES"
+                          ? stats.bestBid
+                          : stats.bestAsk !== null
+                            ? 100 - stats.bestAsk
+                            : null;
 
-                <div className="relative mt-2">
-                  <input
-                    id="amount"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={amount}
-                    onChange={(event) => setAmount(event.target.value)}
-                    placeholder="100"
-                    className="h-12 w-full border border-line bg-paper px-4 pr-12 text-sm text-ink outline-none transition-colors placeholder:text-muted/60 focus:border-ink"
-                  />
-                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-                    cr
-                  </span>
+                    return (
+                      <button
+                        key={entry}
+                        type="button"
+                        onClick={() => chooseOutcome(entry)}
+                        className={`border px-3 py-2 transition-colors ${
+                          outcome === entry
+                            ? entry === "YES"
+                              ? "border-yes bg-yes text-white"
+                              : "border-no bg-no text-white"
+                            : "border-line text-ink hover:border-ink"
+                        }`}
+                      >
+                        <span className="block font-mono text-[10px] uppercase tracking-[0.14em]">
+                          {entry === "YES" ? "Yes" : "No"}
+                        </span>
+                        <span className="mt-0.5 block font-mono text-xs">
+                          {entryPrice === null
+                            ? "—"
+                            : formatCents(entryPrice)}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
 
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {[10, 50, 100].map((value) => (
+                <div className="flex items-center gap-1" role="group" aria-label="Order type">
+                  {(["LIMIT", "MARKET"] as const).map((entry) => (
                     <button
-                      key={value}
+                      key={entry}
                       type="button"
-                      onClick={() => setAmount(String(value))}
-                      className="border border-line px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted transition-colors hover:border-ink hover:text-ink"
+                      onClick={() => chooseOrderType(entry)}
+                      className={`flex-1 border px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors ${
+                        orderType === entry
+                          ? "border-ink bg-ink text-paper"
+                          : "border-line text-muted hover:border-ink hover:text-ink"
+                      }`}
                     >
-                      {value}
+                      {entry === "LIMIT" ? "Limit" : "Market"}
                     </button>
                   ))}
-                  {walletBalance !== null && walletBalance > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setAmount(String(walletBalance))}
-                      className="border border-line px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted transition-colors hover:border-ink hover:text-ink"
-                    >
-                      Max
-                    </button>
-                  )}
                 </div>
 
-                <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
-                  <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                    Est. payout if {outcome} wins
+                {orderType === "LIMIT" && (
+                  <label className="block">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                      Limit price
+                    </span>
+                    <div className="mt-1 flex items-stretch border border-line bg-paper">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          priceTouched.current = true;
+                          setPrice(String(Math.max(1, numericPrice - 1)));
+                        }}
+                        className="px-3 font-mono text-sm text-muted transition-colors hover:text-ink"
+                        aria-label="Decrease price"
+                      >
+                        −
+                      </button>
+                      <input
+                        value={price}
+                        onChange={(event) => {
+                          priceTouched.current = true;
+                          setPrice(event.target.value);
+                        }}
+                        inputMode="numeric"
+                        className="h-11 w-full border-x border-line bg-transparent text-center font-mono text-sm text-ink outline-none focus:border-ink"
+                        aria-label="Limit price in cents"
+                      />
+                      <span className="flex items-center px-2 font-mono text-[10px] text-muted">
+                        ¢
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          priceTouched.current = true;
+                          setPrice(String(Math.min(99, numericPrice + 1)));
+                        }}
+                        className="px-3 font-mono text-sm text-muted transition-colors hover:text-ink"
+                        aria-label="Increase price"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </label>
+                )}
+
+                <label className="block">
+                  <span className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                    <span>Shares</span>
+                    <span>
+                      Hold {formatCredits(outcome === "YES" ? heldYes : heldNo)}{" "}
+                      {outcome}
+                    </span>
                   </span>
-                  <span className="font-mono text-sm font-medium text-ink">
-                    {estimatedPayout !== null
-                      ? `${formatCredits(estimatedPayout)} cr`
-                      : "—"}
-                  </span>
-                </div>
+                  <input
+                    value={quantity}
+                    onChange={(event) => setQuantity(event.target.value)}
+                    inputMode="numeric"
+                    placeholder="0"
+                    className="mt-1 h-11 w-full border border-line bg-paper px-3 font-mono text-sm text-ink outline-none focus:border-ink"
+                    aria-label="Share quantity"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {[5, 10, 25, 50].map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        onClick={() => setQuantity(String(size))}
+                        className="border border-line px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
+                      >
+                        {size}
+                      </button>
+                    ))}
+                    {action === "SELL" && heldShares > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(String(heldShares))}
+                        className="border border-line px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
+                      >
+                        Max
+                      </button>
+                    )}
+                    {action === "BUY" && maxBuyShares !== null && maxBuyShares > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(String(maxBuyShares))}
+                        className="border border-line px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
+                      >
+                        Max
+                      </button>
+                    )}
+                  </div>
+                </label>
+
+                <dl className="space-y-1.5 border-t border-line pt-3 font-mono text-[10px] text-muted">
+                  <div className="flex items-center justify-between">
+                    <dt>{action === "BUY" ? "Est. cost" : "Est. proceeds"}</dt>
+                    <dd className="text-ink">
+                      {estimate
+                        ? `${formatCredits(Math.round(estimate.notional))} cr`
+                        : "—"}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt>Avg. price</dt>
+                    <dd className="text-ink">
+                      {estimate && estimate.shares > 0
+                        ? formatCents(
+                            Math.round(estimate.averagePrice * 10) / 10,
+                          )
+                        : "—"}
+                    </dd>
+                  </div>
+                  {action === "BUY" && (
+                    <div className="flex items-center justify-between">
+                      <dt>Max payout</dt>
+                      <dd className="text-yes">
+                        {validQuantity
+                          ? `${formatCredits(numericQuantity * 100)} cr`
+                          : "—"}
+                      </dd>
+                    </div>
+                  )}
+                  {estimate && estimate.remainder > 0 && (
+                    <div className="flex items-center justify-between text-no">
+                      <dt>Unfillable</dt>
+                      <dd>{formatCredits(estimate.remainder)} shares</dd>
+                    </div>
+                  )}
+                </dl>
 
                 {formError && (
                   <p
                     role="alert"
-                    className="mt-4 border border-no/30 bg-no-soft p-3 text-sm text-no"
+                    className="border border-no/30 bg-no-soft px-3 py-2 text-xs leading-5 text-no"
                   >
                     {formError}
                   </p>
                 )}
-
                 {successMessage && (
-                  <p className="mt-4 border border-yes/30 bg-yes-soft p-3 text-sm text-yes">
+                  <p className="border border-yes/30 bg-yes-soft px-3 py-2 text-xs leading-5 text-yes">
                     {successMessage}
                   </p>
                 )}
 
                 <button
                   type="button"
-                  onClick={handleBet}
-                  disabled={submitting || !validAmount}
-                  className={`mt-4 w-full px-4 py-3 font-mono text-[10px] uppercase tracking-[0.14em] transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
-                    outcome === "YES"
-                      ? "bg-yes text-white hover:opacity-90"
-                      : "bg-no text-white hover:opacity-90"
+                  onClick={handleSubmit}
+                  disabled={!canSubmit}
+                  className={`w-full px-4 py-3 font-mono text-[11px] uppercase tracking-[0.14em] text-white transition-opacity disabled:opacity-40 ${
+                    outcome === "YES" ? "bg-yes" : "bg-no"
                   }`}
                 >
                   {submitting
-                    ? "Placing bet…"
-                    : validAmount
-                      ? `Bet ${formatCredits(numericAmount)} cr on ${outcome}`
-                      : `Bet on ${outcome}`}
+                    ? "Placing…"
+                    : `${action} ${validQuantity ? numericQuantity : ""} ${outcome}`.trim()}
                 </button>
 
-                <p className="mt-3 font-mono text-[9px] uppercase leading-4 tracking-[0.1em] text-muted">
-                  Pooled payout. Prices are set by stake, not an order book.
+                <p className="text-center font-mono text-[9px] uppercase tracking-[0.1em] text-muted">
+                  Winning shares settle at 100 cr · Losers expire at 0
                 </p>
-              </>
+              </div>
             )}
           </div>
-
-          {hasPool && market.status === "OPEN" && (
-            <div className="border-t border-line px-5 py-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-                Payout math
-              </p>
-
-              <dl className="mt-3 space-y-2 font-mono text-[11px]">
-                <div className="flex items-baseline justify-between gap-3">
-                  <dt className={outcome === "YES" ? "text-yes" : "text-muted"}>
-                    1 cr on yes
-                  </dt>
-                  <dd className="text-ink">
-                    {yesMultiplier
-                      ? `≈ ${yesMultiplier} cr if yes wins`
-                      : "No pool yet"}
-                  </dd>
-                </div>
-                <div className="flex items-baseline justify-between gap-3">
-                  <dt className={outcome === "NO" ? "text-no" : "text-muted"}>
-                    1 cr on no
-                  </dt>
-                  <dd className="text-ink">
-                    {noMultiplier
-                      ? `≈ ${noMultiplier} cr if no wins`
-                      : "No pool yet"}
-                  </dd>
-                </div>
-              </dl>
-
-              <p className="mt-3 text-[11px] leading-5 text-muted">
-                Your return shrinks as more credits join the side you back.
-                Figures assume today&apos;s pools.
-              </p>
-            </div>
-          )}
         </aside>
       </div>
+
+      <section className="mt-10 grid gap-6 lg:grid-cols-2">
+        {position && (position.yesShares > 0 || position.noShares > 0) && (
+          <div className="border border-line bg-surface">
+            <div className="border-b border-line px-5 py-3">
+              <h2 className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
+                Your position
+              </h2>
+            </div>
+            <div className="divide-y divide-line">
+              {position.yesShares > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-yes">
+                      Yes · {formatCredits(position.yesShares)} shares
+                    </p>
+                    <p className="mt-1 font-mono text-[10px] text-muted">
+                      Avg {position.avgYesPrice?.toFixed(1)}¢ · Mark{" "}
+                      {position.markPrice === null
+                        ? "—"
+                        : formatCents(position.markPrice)}{" "}
+                      · {formatCredits(Math.round(position.yesShares * (position.markPrice ?? 0)))} cr
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOutcome("YES");
+                      setAction("SELL");
+                      setOrderType("LIMIT");
+                      if (stats.bestBid !== null) {
+                        setPrice(String(stats.bestBid));
+                      }
+                    }}
+                    className="border border-line px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted transition-colors hover:border-ink hover:text-ink"
+                  >
+                    Sell YES
+                  </button>
+                </div>
+              )}
+              {position.noShares > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-no">
+                      No · {formatCredits(position.noShares)} shares
+                    </p>
+                    <p className="mt-1 font-mono text-[10px] text-muted">
+                      Avg {position.avgNoPrice?.toFixed(1)}¢ · Mark{" "}
+                      {position.markPrice === null
+                        ? "—"
+                        : formatCents(100 - position.markPrice)}{" "}
+                      ·{" "}
+                      {formatCredits(
+                        Math.round(
+                          position.noShares * (100 - (position.markPrice ?? 0)),
+                        ),
+                      )}{" "}
+                      cr
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOutcome("NO");
+                      setAction("SELL");
+                      setOrderType("LIMIT");
+                      if (stats.bestAsk !== null) {
+                        setPrice(String(100 - stats.bestAsk));
+                      }
+                    }}
+                    className="border border-line px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted transition-colors hover:border-ink hover:text-ink"
+                  >
+                    Sell NO
+                  </button>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 font-mono text-[10px] text-muted">
+                <span>
+                  Unrealized{" "}
+                  <span
+                    className={
+                      position.unrealized >= 0 ? "text-yes" : "text-no"
+                    }
+                  >
+                    {position.unrealized >= 0 ? "+" : ""}
+                    {formatCredits(position.unrealized)} cr
+                  </span>
+                </span>
+                <span>
+                  Reserved{" "}
+                  {formatCredits(position.yesReserved + position.noReserved)}{" "}
+                  shares
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {orders.length > 0 && (
+          <div className="border border-line bg-surface">
+            <div className="border-b border-line px-5 py-3">
+              <h2 className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
+                Open orders
+              </h2>
+            </div>
+            <ul>
+              {orders.map((order) => (
+                <li
+                  key={order.id}
+                  className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-5 py-3 last:border-0"
+                >
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.1em]">
+                      <span
+                        className={
+                          order.action === "BUY" ? "text-yes" : "text-no"
+                        }
+                      >
+                        {order.action}
+                      </span>{" "}
+                      <span className="text-ink">{order.outcome}</span>{" "}
+                      <span className="text-muted">
+                        @ {formatCents(order.price)}
+                      </span>
+                    </p>
+                    <p className="mt-1 font-mono text-[10px] text-muted">
+                      {formatCredits(order.filledQuantity)} /{" "}
+                      {formatCredits(order.quantity)} filled ·{" "}
+                      {order.status.toLowerCase()}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCancel(order.id)}
+                    className="border border-line px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted transition-colors hover:border-ink hover:text-ink"
+                  >
+                    Cancel
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
     </main>
   );
 }
