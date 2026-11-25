@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { closeMarket } from "@/lib/exchange/market";
 
 function isAuthorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -29,13 +30,46 @@ export async function GET(request: Request) {
   }
 
   const now = new Date();
-  const result = await prisma.market.updateMany({
+  const expired = await prisma.market.findMany({
     where: { status: "OPEN", closesAt: { lte: now } },
-    data: { status: "CLOSED" },
+    orderBy: { closesAt: "asc" },
+    take: 50,
+    select: { id: true },
   });
 
+  const admin = await prisma.user.findFirst({
+    where: { role: "ADMIN" },
+    select: { id: true },
+  });
+
+  let closed = 0;
+  let cancelledOrders = 0;
+
+  for (const market of expired) {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        try {
+          return await closeMarket(tx, {
+            marketId: market.id,
+            adminId: admin?.id,
+          });
+        } catch {
+          return null;
+        }
+      },
+      { maxWait: 10_000, timeout: 20_000 },
+    );
+
+    if (result?.closed) {
+      closed += 1;
+      cancelledOrders += result.cancelledOrders;
+    }
+  }
+
   return NextResponse.json({
-    closed: result.count,
+    closed,
+    cancelledOrders,
+    remaining: Math.max(0, expired.length - closed),
     ranAt: now.toISOString(),
   });
 }
