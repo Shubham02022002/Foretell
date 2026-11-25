@@ -189,7 +189,7 @@ export default function LeaderboardPage() {
                 {formatSignedCredits(viewer.net)} cr
               </span>
               <span className="ml-3 text-muted">
-                {formatCredits(viewer.volume)} cr staked
+                {formatCredits(viewer.volume)} cr traded
               </span>
             </p>
           </div>
@@ -219,8 +219,8 @@ export default function LeaderboardPage() {
               No ranked traders in this window.
             </p>
             <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-              Rankings appear once positions settle. Take a side and your name
-              enters the board.
+              Rankings appear once traders fill orders. Take a side and your
+              name enters the board.
             </p>
           </div>
         ) : (
@@ -246,7 +246,7 @@ export default function LeaderboardPage() {
                   scope="col"
                   className="hidden w-32 py-3 text-right font-normal sm:table-cell"
                 >
-                  Staked
+                  Volume
                 </th>
                 <th scope="col" className="w-32 py-3 text-right font-normal">
                   Net
@@ -293,7 +293,7 @@ export default function LeaderboardPage() {
                           </Link>
                           <span className="mt-0.5 block font-mono text-[10px] text-muted">
                             {entry.wins} won · {entry.bets}{" "}
-                            {entry.bets === 1 ? "bet" : "bets"}
+                            {entry.bets === 1 ? "trade" : "trades"}
                             {hitRate !== null ? ` · ${hitRate}%` : ""}
                           </span>
                         </span>
@@ -326,8 +326,8 @@ export default function LeaderboardPage() {
 
       <div className="mx-auto w-full max-w-7xl px-4 pb-16 sm:px-6">
         <p className="border-t border-line pt-6 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-          Rankings cover settled and open stakes. Unrealized positions count as
-          losses until they payout.
+          Rankings track realized cash flow across fills and settlements. Open
+          positions are not marked to market until they settle.
         </p>
       </div>
     </main>
