@@ -304,6 +304,15 @@ If you are upgrading a database that still uses the old pari-mutuel schema, `db 
 
 The seed creates six accounts, five AI markets, a resting liquidity ladder on each open market, ten backdated trades per market, and one resolved fixture that exercises settlement. It is resumable: markets that already have orders or trades are skipped.
 
+For a much larger load/visual-testing dataset:
+
+```bash
+bun run db:seed:load          # 120 markets, ~16k trades, all lifecycle states
+bunx tsx prisma/seed-load.ts --reset   # wipe only the load- dataset and regenerate
+```
+
+The load dataset adds 61 `load-*` accounts, 120 markets (OPEN, CLOSED, RESOLVED, VOID, DRAFT), empty and one-sided books, deep and wide books, partial and cancelled/expired orders, resting sell orders, ~16k trades, positions, ledgers, settlements, comments, watchlists, notifications, and audit events. All generated rows are prefixed with `load-`; `--reset` only removes that data. Load accounts use the same password: `load-user-01@example.com` through `load-user-60@example.com`, plus `load-admin@example.com`.
+
 | Email | Role | Password |
 | ----- | ---- | -------- |
 | `admin@example.com` | Admin | `password123` |
