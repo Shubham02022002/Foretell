@@ -42,3 +42,6 @@ next-env.d.ts
 
 /app/generated/prisma
 Arch.md
+
+# The project uses Bun; bun.lock is the canonical lockfile.
+package-lock.json
