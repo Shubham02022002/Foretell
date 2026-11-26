@@ -103,12 +103,21 @@ function traderFor(index: number, traders: { id: string }[]) {
 
 async function ensureUsers() {
   const devPasswordHash = await bcrypt.hash(DEV_PASSWORD, 12);
+  const configuredAdminPassword =
+    process.env.SEED_ADMIN_PASSWORD?.trim() || "";
+  const adminPassword = configuredAdminPassword || DEV_PASSWORD;
+  const adminPasswordHash =
+    adminPassword === DEV_PASSWORD
+      ? devPasswordHash
+      : await bcrypt.hash(adminPassword, 12);
 
   return prisma.$transaction(
     async (tx) => {
       const users = new Map<string, { id: string }>();
 
       for (const seed of userSeeds) {
+        const passwordHash =
+          seed.role === "ADMIN" ? adminPasswordHash : devPasswordHash;
         let user = await tx.user.findUnique({
           where: { email: seed.email },
           select: { id: true, passwordHash: true },
@@ -120,14 +129,17 @@ async function ensureUsers() {
               email: seed.email,
               name: seed.name,
               role: seed.role,
-              passwordHash: devPasswordHash,
+              passwordHash,
             },
             select: { id: true, passwordHash: true },
           });
-        } else if (!user.passwordHash) {
+        } else if (
+          !user.passwordHash ||
+          (seed.role === "ADMIN" && configuredAdminPassword)
+        ) {
           await tx.user.update({
             where: { id: user.id },
-            data: { passwordHash: devPasswordHash },
+            data: { passwordHash },
           });
         }
 
@@ -399,7 +411,13 @@ async function main() {
   }
 
   console.log("Development seed completed successfully.");
-  console.log(`Seed accounts use password: ${DEV_PASSWORD}`);
+  console.log(`Trader accounts use password: ${DEV_PASSWORD}`);
+
+  if (process.env.SEED_ADMIN_PASSWORD?.trim()) {
+    console.log("Admin password was set from SEED_ADMIN_PASSWORD.");
+  } else {
+    console.log(`Admin account uses password: ${DEV_PASSWORD}`);
+  }
 }
 
 main()
