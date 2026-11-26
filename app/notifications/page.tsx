@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { formatDate } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type NotificationItem = {
   id: string;
@@ -37,19 +38,14 @@ export default function NotificationsPage() {
     setError("");
 
     try {
-      const response = await fetch("/api/notifications");
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to load notifications.");
-      }
+      const { data: payload } = await axios.get<NotificationsResponse>(
+        "/api/notifications",
+      );
 
       setData(payload);
     } catch (loadError) {
       setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Unable to load notifications.",
+        apiErrorMessage(loadError, "Unable to load notifications."),
       );
     } finally {
       setLoading(false);
@@ -73,13 +69,7 @@ export default function NotificationsPage() {
     setMarking(true);
 
     try {
-      const response = await fetch("/api/notifications/read", {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        throw new Error("Unable to mark notifications as read.");
-      }
+      await axios.post("/api/notifications/read");
 
       const readAt = new Date().toISOString();
       setData({

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { AuthShell } from "@/components/auth-shell";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -18,28 +19,21 @@ export default function ForgotPasswordPage() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/forgot-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim().toLowerCase() }),
-      });
-      const payload = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(
-          payload?.error ?? "Unable to send the reset link. Try again.",
-        );
-      }
+      const { data } = await axios.post<{ message?: string }>(
+        "/api/auth/forgot-password",
+        { email: email.trim().toLowerCase() },
+      );
 
       setMessage(
-        payload?.message ??
+        data.message ??
           "If an account exists for that email, a reset link is on its way.",
       );
     } catch (submitError) {
       setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Unable to send the reset link. Try again.",
+        apiErrorMessage(
+          submitError,
+          "Unable to send the reset link. Try again.",
+        ),
       );
     } finally {
       setLoading(false);

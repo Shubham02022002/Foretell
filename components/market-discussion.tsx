@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
 import { formatDate, formatInitials } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type Comment = {
   id: string;
@@ -35,12 +36,9 @@ export function MarketDiscussion({ slug }: { slug: string }) {
       setLoadError("");
 
       try {
-        const response = await fetch(`/api/markets/${slug}/comments`);
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error ?? "Unable to load the discussion.");
-        }
+        const { data } = await axios.get<{ comments?: Comment[] }>(
+          `/api/markets/${slug}/comments`,
+        );
 
         if (!cancelled) {
           setComments(Array.isArray(data.comments) ? data.comments : []);
@@ -48,9 +46,7 @@ export function MarketDiscussion({ slug }: { slug: string }) {
       } catch (error) {
         if (!cancelled) {
           setLoadError(
-            error instanceof Error
-              ? error.message
-              : "Unable to load the discussion.",
+            apiErrorMessage(error, "Unable to load the discussion."),
           );
         }
       } finally {
@@ -78,25 +74,15 @@ export function MarketDiscussion({ slug }: { slug: string }) {
     setPostError("");
 
     try {
-      const response = await fetch(`/api/markets/${slug}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: trimmed }),
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error ?? "Unable to post your comment.");
-      }
+      const { data } = await axios.post<{ comment: Comment }>(
+        `/api/markets/${slug}/comments`,
+        { body: trimmed },
+      );
 
       setComments((current) => [data.comment, ...current]);
       setBody("");
     } catch (error) {
-      setPostError(
-        error instanceof Error
-          ? error.message
-          : "Unable to post your comment.",
-      );
+      setPostError(apiErrorMessage(error, "Unable to post your comment."));
     } finally {
       setPosting(false);
     }

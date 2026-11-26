@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/auth-shell";
+import { apiErrorBody, axios } from "@/lib/http";
 
 type FieldErrors = Record<string, string[] | undefined>;
 
@@ -24,28 +25,11 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          password,
-          ...(name.trim() ? { name: name.trim() } : {}),
-        }),
+      await axios.post("/api/auth/register", {
+        email: email.trim().toLowerCase(),
+        password,
+        ...(name.trim() ? { name: name.trim() } : {}),
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        const fieldErrors = data?.details?.fieldErrors as
-          | FieldErrors
-          | undefined;
-        const firstFieldError = fieldErrors
-          ? Object.values(fieldErrors).flat().find(Boolean)
-          : undefined;
-
-        setError(firstFieldError ?? data?.error ?? "Unable to create account.");
-        return;
-      }
 
       const result = await signIn("credentials", {
         email: email.trim().toLowerCase(),
@@ -60,8 +44,19 @@ export default function RegisterPage() {
 
       router.push("/markets");
       router.refresh();
-    } catch {
-      setError("Unable to create account. Please try again.");
+    } catch (submitError) {
+      const data = apiErrorBody<{
+        details?: { fieldErrors?: FieldErrors };
+        error?: string;
+      }>(submitError);
+      const fieldErrors = data?.details?.fieldErrors;
+      const firstFieldError = fieldErrors
+        ? Object.values(fieldErrors).flat().find(Boolean)
+        : undefined;
+
+      setError(
+        firstFieldError ?? data?.error ?? "Unable to create account.",
+      );
     } finally {
       setLoading(false);
     }

@@ -1,3 +1,5 @@
+import axios from "axios";
+
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Foretell <onboarding@resend.dev>";
 
@@ -18,26 +20,35 @@ export async function sendEmail(message: EmailMessage) {
     return;
   }
 
-  const response = await fetch(RESEND_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: process.env.EMAIL_FROM || DEFAULT_FROM,
-      to: [message.to],
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-    }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Resend rejected the email (${response.status})${detail ? `: ${detail}` : ""}`,
+  try {
+    await axios.post(
+      RESEND_ENDPOINT,
+      {
+        from: process.env.EMAIL_FROM || DEFAULT_FROM,
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+      },
     );
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const data = error.response?.data;
+      const detail =
+        typeof data === "string" ? data : data ? JSON.stringify(data) : "";
+
+      throw new Error(
+        `Resend rejected the email (${status})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+
+    throw error;
   }
 }
 

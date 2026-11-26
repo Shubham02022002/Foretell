@@ -6,6 +6,7 @@ import { signOut, useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { Logo } from "@/components/brand";
 import { formatCredits } from "@/lib/format";
+import { axios } from "@/lib/http";
 
 const NAV_LINKS: { href: string; label: string; authOnly?: boolean }[] = [
   { href: "/markets", label: "Markets" },
@@ -32,12 +33,9 @@ export default function Navbar() {
     }
 
     try {
-      const response = await fetch("/api/wallet");
-      if (!response.ok) {
-        setBalance(null);
-        return;
-      }
-      const data = await response.json();
+      const { data } = await axios.get<{
+        wallet: { balance: number; available?: number };
+      }>("/api/wallet");
       setBalance(data.wallet.available ?? data.wallet.balance);
     } catch {
       setBalance(null);
@@ -51,11 +49,9 @@ export default function Navbar() {
     }
 
     try {
-      const response = await fetch("/api/notifications?count=true");
-      if (!response.ok) {
-        return;
-      }
-      const data = await response.json();
+      const { data } = await axios.get<{ unreadCount?: number }>(
+        "/api/notifications?count=true",
+      );
       setUnread(data.unreadCount ?? 0);
     } catch {
       // Keep the last known count when the request fails.

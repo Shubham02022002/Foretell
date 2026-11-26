@@ -9,6 +9,7 @@ import {
   type FormEvent,
 } from "react";
 import { formatCents, formatCredits, formatDate } from "@/lib/format";
+import { apiErrorBody, apiErrorMessage, axios } from "@/lib/http";
 
 type MarketStatus = "DRAFT" | "OPEN" | "CLOSED" | "RESOLVED" | "VOID";
 type Outcome = "YES" | "NO";
@@ -155,27 +156,24 @@ export default function AdminPage() {
           params.set("status", targetStatus);
         }
 
-        const response = await fetch(`/api/admin/markets?${params}`);
-        const payload = await response.json();
+        const { data: payload } = await axios.get<AdminMarketsResponse>(
+          `/api/admin/markets?${params}`,
+        );
 
-        if (response.status === 401 || response.status === 403) {
+        setForbidden(false);
+        setData(payload);
+      } catch (loadError) {
+        if (
+          axios.isAxiosError(loadError) &&
+          (loadError.response?.status === 401 ||
+            loadError.response?.status === 403)
+        ) {
           setForbidden(true);
           setData(null);
           return;
         }
 
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Unable to load markets.");
-        }
-
-        setForbidden(false);
-        setData(payload);
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Unable to load markets.",
-        );
+        setError(apiErrorMessage(loadError, "Unable to load markets."));
       } finally {
         setLoading(false);
       }
@@ -207,19 +205,18 @@ export default function AdminPage() {
     setNotice(null);
 
     try {
-      const response = await fetch(
-        `/api/admin/markets/${market.slug}/${action}`,
-        {
-          method: "POST",
-          headers: body ? { "Content-Type": "application/json" } : undefined,
-          body: body ? JSON.stringify(body) : undefined,
-        },
-      );
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Action failed.");
-      }
+      const { data: payload } = await axios.post<{
+        settlement?: {
+          outcome: Outcome;
+          winners: number;
+          totalPayout: number;
+        };
+        refund?: {
+          totalRefund: number;
+          holders: number;
+          price: number;
+        };
+      }>(`/api/admin/markets/${market.slug}/${action}`, body);
 
       if (action === "resolve" && payload.settlement) {
         const { outcome, winners, totalPayout } = payload.settlement;
@@ -247,8 +244,7 @@ export default function AdminPage() {
     } catch (actionError) {
       setNotice({
         tone: "error",
-        message:
-          actionError instanceof Error ? actionError.message : "Action failed.",
+        message: apiErrorMessage(actionError, "Action failed."),
       });
     } finally {
       setPendingKey(null);
@@ -274,27 +270,16 @@ export default function AdminPage() {
     setNotice(null);
 
     try {
-      const response = await fetch("/api/markets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          slug: form.slug,
-          question: form.question,
-          description: form.description,
-          rules: form.rules,
-          category: form.category,
-          closesAt: new Date(form.closesAt).toISOString(),
-        }),
+      const { data: payload } = await axios.post<{
+        market: { question: string };
+      }>("/api/markets", {
+        slug: form.slug,
+        question: form.question,
+        description: form.description,
+        rules: form.rules,
+        category: form.category,
+        closesAt: new Date(form.closesAt).toISOString(),
       });
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          firstFieldError(payload.details) ??
-            payload.error ??
-            "Unable to create market.",
-        );
-      }
 
       setNotice({
         tone: "success",
@@ -310,10 +295,15 @@ export default function AdminPage() {
         setPage(1);
       }
     } catch (createFailure) {
+      const body = apiErrorBody<{
+        details?: unknown;
+        error?: string;
+      }>(createFailure);
+
       setCreateError(
-        createFailure instanceof Error
-          ? createFailure.message
-          : "Unable to create market.",
+        firstFieldError(body?.details) ??
+          body?.error ??
+          "Unable to create market.",
       );
     } finally {
       setCreating(false);

@@ -9,6 +9,7 @@ import {
   formatInitials,
   formatSignedCredits,
 } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type TraderStats = {
   net: number;
@@ -66,22 +67,17 @@ export function TraderProfile({ id }: { id: string }) {
       setError("");
 
       try {
-        const response = await fetch(`/api/traders/${id}`);
-        const payload = await response.json();
-
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Unable to load this trader.");
-        }
+        const { data } = await axios.get<TraderResponse>(
+          `/api/traders/${id}`,
+        );
 
         if (!cancelled) {
-          setData(payload);
+          setData(data);
         }
       } catch (loadError) {
         if (!cancelled) {
           setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Unable to load this trader.",
+            apiErrorMessage(loadError, "Unable to load this trader."),
           );
         }
       } finally {

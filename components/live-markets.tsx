@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { MarketRow, type MarketSummary } from "@/components/market-row";
 import { ProbabilityBar, StatusPill } from "@/components/market-ui";
 import { formatCents, formatCredits, formatDate } from "@/lib/format";
+import { axios } from "@/lib/http";
 
 function useOpenMarkets(limit: number) {
   const [markets, setMarkets] = useState<MarketSummary[] | null>(null);
@@ -15,13 +16,9 @@ function useOpenMarkets(limit: number) {
 
     async function loadMarkets() {
       try {
-        const response = await fetch(
+        const { data } = await axios.get<{ markets: MarketSummary[] }>(
           `/api/markets?status=OPEN&limit=${limit}`,
         );
-        if (!response.ok) {
-          throw new Error("Unable to load markets.");
-        }
-        const data = await response.json();
         if (!cancelled) {
           setMarkets(data.markets);
         }

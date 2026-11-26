@@ -8,6 +8,7 @@ import {
   formatInitials,
   formatSignedCredits,
 } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type WindowOption = "all" | "30d" | "7d";
 
@@ -58,22 +59,17 @@ export default function LeaderboardPage() {
       setError("");
 
       try {
-        const response = await fetch(`/api/leaderboard?window=${window}`);
-        const payload = await response.json();
-
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Unable to load the leaderboard.");
-        }
+        const { data } = await axios.get<LeaderboardResponse>(
+          `/api/leaderboard?window=${window}`,
+        );
 
         if (!cancelled) {
-          setData(payload);
+          setData(data);
         }
       } catch (loadError) {
         if (!cancelled) {
           setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Unable to load the leaderboard.",
+            apiErrorMessage(loadError, "Unable to load the leaderboard."),
           );
         }
       } finally {

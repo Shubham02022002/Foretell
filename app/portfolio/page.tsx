@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { SideChip, StatusPill } from "@/components/market-ui";
 import { formatCents, formatCredits, formatDate } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type Wallet = {
   balance: number;
@@ -110,24 +111,21 @@ export default function PortfolioPage() {
     try {
       const [walletResponse, portfolioResponse, ledgerResponse] =
         await Promise.all([
-          fetch("/api/wallet"),
-          fetch("/api/positions/me"),
-          fetch("/api/wallet/ledger?limit=20"),
+          axios.get<{ wallet: Wallet }>("/api/wallet"),
+          axios.get<{
+            positions?: Position[];
+            orders?: OpenOrder[];
+            summary?: Summary | null;
+          }>("/api/positions/me"),
+          axios.get<{ entries?: LedgerEntry[] }>(
+            "/api/wallet/ledger?limit=20",
+          ),
         ]);
 
-      if (
-        !walletResponse.ok ||
-        !portfolioResponse.ok ||
-        !ledgerResponse.ok
-      ) {
-        throw new Error("Unable to load your portfolio.");
-      }
+      const portfolioData = portfolioResponse.data;
+      const ledgerData = ledgerResponse.data;
 
-      const walletData = await walletResponse.json();
-      const portfolioData = await portfolioResponse.json();
-      const ledgerData = await ledgerResponse.json();
-
-      setWallet(walletData.wallet);
+      setWallet(walletResponse.data.wallet);
       setPositions(
         Array.isArray(portfolioData.positions) ? portfolioData.positions : [],
       );
@@ -138,9 +136,7 @@ export default function PortfolioPage() {
       setEntries(Array.isArray(ledgerData.entries) ? ledgerData.entries : []);
     } catch (loadError) {
       setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Unable to load your portfolio.",
+        apiErrorMessage(loadError, "Unable to load your portfolio."),
       );
     } finally {
       setLoading(false);
@@ -169,22 +165,13 @@ export default function PortfolioPage() {
     setError("");
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/cancel`, {
-        method: "POST",
-      });
-      const payload = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(payload?.error ?? "Unable to cancel this order.");
-      }
+      await axios.post(`/api/orders/${orderId}/cancel`);
 
       window.dispatchEvent(new Event("wallet:updated"));
       await loadPortfolio();
     } catch (cancelError) {
       setError(
-        cancelError instanceof Error
-          ? cancelError.message
-          : "Unable to cancel this order.",
+        apiErrorMessage(cancelError, "Unable to cancel this order."),
       );
     } finally {
       setCancellingId(null);

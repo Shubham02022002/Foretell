@@ -27,6 +27,7 @@ import {
   type ChartRange,
 } from "@/components/probability-chart";
 import { formatCents, formatCredits, formatDate } from "@/lib/format";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 type MarketDetail = {
   id: string;
@@ -187,20 +188,16 @@ function MarketPageContent() {
 
   const loadMeta = useCallback(async () => {
     try {
-      const response = await fetch(`/api/markets/${slug}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error ?? "Unable to load market.");
-      }
+      const { data } = await axios.get<{
+        market: MarketDetail;
+        stats: MarketStats | null;
+      }>(`/api/markets/${slug}`);
 
       setMarket(data.market);
       setStats(data.stats ?? EMPTY_STATS);
       setWatched(Boolean(data.market.watched));
     } catch (error) {
-      setLoadError(
-        error instanceof Error ? error.message : "Unable to load market.",
-      );
+      setLoadError(apiErrorMessage(error, "Unable to load market."));
     } finally {
       setLoading(false);
     }
@@ -208,11 +205,13 @@ function MarketPageContent() {
 
   const loadBook = useCallback(async () => {
     try {
-      const response = await fetch(`/api/markets/${slug}/book`);
-      if (!response.ok) {
-        return;
-      }
-      const data = await response.json();
+      const { data } = await axios.get<{
+        book?: BookData;
+        stats?: MarketStats;
+        trades?: TradeTapeItem[];
+        market?: { status: string };
+      }>(`/api/markets/${slug}/book`);
+
       setBook(data.book ?? EMPTY_BOOK);
       setStats(data.stats ?? EMPTY_STATS);
       setTrades(Array.isArray(data.trades) ? data.trades : []);
@@ -234,13 +233,9 @@ function MarketPageContent() {
     async (nextRange: ChartRange) => {
       setChartLoading(true);
       try {
-        const response = await fetch(
+        const { data } = await axios.get<{ candles?: CandleInput[] }>(
           `/api/markets/${slug}/candles?range=${nextRange}`,
         );
-        if (!response.ok) {
-          return;
-        }
-        const data = await response.json();
         setCandles(Array.isArray(data.candles) ? data.candles : []);
       } catch {
         setCandles([]);
@@ -259,28 +254,26 @@ function MarketPageContent() {
       return;
     }
 
-    try {
-      const [walletResponse, positionsResponse] = await Promise.all([
-        fetch("/api/wallet"),
-        fetch(`/api/positions/me?market=${slug}`),
-      ]);
+    const [walletResult, positionsResult] = await Promise.allSettled([
+      axios.get<{ wallet: WalletState }>("/api/wallet"),
+      axios.get<{ positions?: Position[]; orders?: OpenOrder[] }>(
+        `/api/positions/me?market=${slug}`,
+      ),
+    ]);
 
-      if (walletResponse.ok) {
-        const data = await walletResponse.json();
-        setWallet(data.wallet);
-      }
+    // Account data is opportunistic; order endpoints enforce balances.
+    if (walletResult.status === "fulfilled") {
+      setWallet(walletResult.value.data.wallet);
+    }
 
-      if (positionsResponse.ok) {
-        const data = await positionsResponse.json();
-        setPosition(
-          Array.isArray(data.positions) && data.positions.length > 0
-            ? data.positions[0]
-            : null,
-        );
-        setOrders(Array.isArray(data.orders) ? data.orders : []);
-      }
-    } catch {
-      // Account data is opportunistic; order endpoints enforce balances.
+    if (positionsResult.status === "fulfilled") {
+      const data = positionsResult.value.data;
+      setPosition(
+        Array.isArray(data.positions) && data.positions.length > 0
+          ? data.positions[0]
+          : null,
+      );
+      setOrders(Array.isArray(data.orders) ? data.orders : []);
     }
   }, [sessionStatus, slug]);
 
@@ -527,25 +520,17 @@ function MarketPageContent() {
     setSubmitting(true);
 
     try {
-      const response = await fetch(`/api/markets/${slug}/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          outcome,
-          action,
-          type: orderType,
-          ...(orderType === "LIMIT" ? { price: numericPrice } : {}),
-          quantity: numericQuantity,
-          idempotencyKey: crypto.randomUUID(),
-        }),
+      const { data } = await axios.post<{
+        order: { status: string; filledQuantity: number };
+        selfCrossed: boolean;
+      }>(`/api/markets/${slug}/orders`, {
+        outcome,
+        action,
+        type: orderType,
+        ...(orderType === "LIMIT" ? { price: numericPrice } : {}),
+        quantity: numericQuantity,
+        idempotencyKey: crypto.randomUUID(),
       });
-
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        setFormError(data?.error ?? "Unable to place order.");
-        return;
-      }
 
       if (
         data.order?.status === "FILLED" ||
@@ -584,8 +569,13 @@ function MarketPageContent() {
         loadCandles(range),
         loadMeta(),
       ]);
-    } catch {
-      setFormError("Unable to place order. Please try again.");
+    } catch (submitError) {
+      setFormError(
+        apiErrorMessage(
+          submitError,
+          "Unable to place order. Please try again.",
+        ),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -593,20 +583,12 @@ function MarketPageContent() {
 
   async function handleCancel(orderId: string) {
     try {
-      const response = await fetch(`/api/orders/${orderId}/cancel`, {
-        method: "POST",
-      });
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        setFormError(data?.error ?? "Unable to cancel order.");
-        return;
-      }
+      await axios.post(`/api/orders/${orderId}/cancel`);
 
       window.dispatchEvent(new Event("wallet:updated"));
       await Promise.all([loadBook(), loadAccount()]);
-    } catch {
-      setFormError("Unable to cancel order.");
+    } catch (cancelError) {
+      setFormError(apiErrorMessage(cancelError, "Unable to cancel order."));
     }
   }
 
@@ -620,12 +602,10 @@ function MarketPageContent() {
     setWatchPending(true);
 
     try {
-      const response = await fetch(`/api/watchlist/${market.slug}`, {
-        method: nextWatched ? "POST" : "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Unable to update watchlist.");
+      if (nextWatched) {
+        await axios.post(`/api/watchlist/${market.slug}`);
+      } else {
+        await axios.delete(`/api/watchlist/${market.slug}`);
       }
     } catch {
       setWatched(!nextWatched);

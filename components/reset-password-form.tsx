@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { AuthShell } from "@/components/auth-shell";
+import { apiErrorMessage, axios } from "@/lib/http";
 
 export function ResetPasswordForm() {
   const searchParams = useSearchParams();
@@ -27,25 +28,18 @@ export function ResetPasswordForm() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/reset-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, password }),
-      });
-      const payload = await response.json().catch(() => null);
+      const { data } = await axios.post<{ message?: string }>(
+        "/api/auth/reset-password",
+        { token, password },
+      );
 
-      if (!response.ok) {
-        throw new Error(
-          payload?.error ?? "Unable to reset the password. Try again.",
-        );
-      }
-
-      setMessage(payload?.message ?? "Password updated. You can sign in now.");
+      setMessage(data.message ?? "Password updated. You can sign in now.");
     } catch (submitError) {
       setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Unable to reset the password. Try again.",
+        apiErrorMessage(
+          submitError,
+          "Unable to reset the password. Try again.",
+        ),
       );
     } finally {
       setLoading(false);

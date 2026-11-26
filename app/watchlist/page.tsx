@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { MarketRow, type MarketSummary } from "@/components/market-row";
+import { apiErrorMessage, axios } from "@/lib/http";
 import { formatCredits } from "@/lib/format";
 
 const LIMIT = 50;
@@ -30,20 +31,16 @@ export default function WatchlistPage() {
         sort: "closing",
         limit: String(LIMIT),
       });
-      const response = await fetch(`/api/markets?${params.toString()}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error ?? "Unable to load your watchlist.");
-      }
+      const { data } = await axios.get<{
+        markets: MarketSummary[];
+        pagination?: { totalMarkets?: number };
+      }>(`/api/markets?${params.toString()}`);
 
       setMarkets(data.markets);
       setTotalMarkets(data.pagination?.totalMarkets ?? data.markets.length);
     } catch (loadError) {
       setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Unable to load your watchlist.",
+        apiErrorMessage(loadError, "Unable to load your watchlist."),
       );
     } finally {
       setLoading(false);
@@ -69,13 +66,7 @@ export default function WatchlistPage() {
     setTotalMarkets((current) => Math.max(0, current - 1));
 
     try {
-      const response = await fetch(`/api/watchlist/${market.slug}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Unable to update watchlist.");
-      }
+      await axios.delete(`/api/watchlist/${market.slug}`);
     } catch {
       setMarkets(previous);
       setTotalMarkets((current) => current + 1);
