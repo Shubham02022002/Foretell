@@ -8,6 +8,8 @@ The product is deliberately editorial: a paper-and-ink palette, hairline rules, 
 
 > Virtual credits only. Foretell does not handle real money.
 
+**Live demo:** [foretell-lac.vercel.app](https://foretell-lac.vercel.app)
+
 ---
 
 ## Why it is different
@@ -16,6 +18,16 @@ The product is deliberately editorial: a paper-and-ink palette, hairline rules, 
 - **Binary-specific matching.** BUY YES and SELL NO are two ways to be long YES; SELL YES and BUY NO are two ways to be short. Normalising every order to a YES price lets one book match all four combinations — including minting a fresh YES/NO pair and merging an existing one.
 - **Escrowed, conserved money.** Buy orders reserve credits; sell orders reserve shares. Cancellations and expiries release both. Every matched pair is backed by exactly 100 credits, so winning payouts equal the collateral held at settlement.
 - **Editorial-grade UI.** No dashboard templates. The interface is designed around market questions, probability, and money — with square corners, tabular numerals, and a single accent color.
+
+---
+
+## Architecture
+
+A request flows through the App Router pages, route handlers, the exchange engine, and Prisma/PostgreSQL.
+
+[![Foretell architecture and request flow](public/foretell-flow.png)](public/foretell-flow.png)
+
+<sub>Click the diagram to open it at full resolution.</sub>
 
 ---
 
