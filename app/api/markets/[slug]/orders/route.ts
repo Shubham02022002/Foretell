@@ -13,6 +13,8 @@ type RouteContext = {
   params: Promise<{ slug: string }>;
 };
 
+export const maxDuration = 60;
+
 const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
 
 export async function GET(_request: Request, { params }: RouteContext) {

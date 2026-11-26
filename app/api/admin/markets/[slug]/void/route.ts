@@ -8,6 +8,8 @@ import {
   marketVoidSchema,
 } from "@/lib/validations/market";
 
+export const maxDuration = 60;
+
 type RouteContext = {
   params: Promise<{ slug: string }>;
 };

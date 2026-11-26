@@ -6,6 +6,8 @@ import { cancelOrder } from "@/lib/exchange/orders";
 import { orderIdParamsSchema } from "@/lib/validations/order";
 import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
+export const maxDuration = 60;
+
 type RouteContext = {
   params: Promise<{ id: string }>;
 };

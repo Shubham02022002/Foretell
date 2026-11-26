@@ -1,0 +1,44 @@
+name: Close expired markets
+
+# Free five-minute scheduler for Hobby deployments.
+# Requires:
+#   - repository variable APP_URL (e.g. https://foretell.example.com, no trailing slash)
+#   - repository secret CRON_SECRET (the same value set in Vercel)
+# If you upgrade to Vercel Pro, change vercel.json to "*/5 * * * *"
+# and you can disable this workflow.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: close-expired
+  cancel-in-progress: false
+
+jobs:
+  close-expired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate configuration
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          test -n "$APP_URL" || { echo "Missing APP_URL repository variable"; exit 1; }
+          test -n "$CRON_SECRET" || { echo "Missing CRON_SECRET repository secret"; exit 1; }
+
+      - name: Call the cron endpoint
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error \
+            --retry 3 --retry-delay 5 --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cron/close-expired"
