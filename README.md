@@ -145,8 +145,12 @@ lib/
 prisma/
   schema.prisma        data model
   seed.ts              demo users, markets, liquidity, backdated trades
+  seed-load.ts         large synthetic dataset for load/visual testing
+.github/workflows/
+  close-expired.yml    five-minute scheduler for Hobby deployments
 auth.ts                Auth.js configuration
-vercel.json            cron schedule for closing expired markets
+vercel.json            daily cron fallback for closing expired markets
+DEPLOYMENT.md          Vercel + Neon deployment checklist
 ```
 
 The generated Prisma client is written to `app/generated/prisma` (and is gitignored; run `prisma generate` after cloning).
@@ -286,6 +290,7 @@ Create a `.env` file in the project root:
 | `DIRECT_DATABASE_URL` | Recommended | Direct connection used by Prisma CLI |
 | `AUTH_SECRET` | Yes | Auth.js signing secret (`openssl rand -base64 32`) |
 | `CRON_SECRET` | Production | Bearer token for the close-expired cron route |
+| `SEED_ADMIN_PASSWORD` | Production seed | Overrides the seeded admin password; not needed at runtime |
 | `RESEND_API_KEY` | No | Enables real email delivery; without it, reset emails log to the console |
 | `EMAIL_FROM` | No | Verified sender, defaults to `Foretell <onboarding@resend.dev>` |
 | `NEXT_PUBLIC_APP_URL` | No | Canonical origin used in reset links |
@@ -303,6 +308,8 @@ bun run db:seed
 If you are upgrading a database that still uses the old pari-mutuel schema, `db push` is destructive: it drops `Bet` and rewrites the ledger enum. Use `--accept-data-loss` only on a development database.
 
 The seed creates six accounts, five AI markets, a resting liquidity ladder on each open market, ten backdated trades per market, and one resolved fixture that exercises settlement. It is resumable: markets that already have orders or trades are skipped.
+
+The credentials below are local development defaults. For production, set `SEED_ADMIN_PASSWORD` before running the seed and do not publish the admin credentials. See [DEPLOYMENT.md](DEPLOYMENT.md) for the full checklist.
 
 For a much larger load/visual-testing dataset:
 
@@ -353,9 +360,13 @@ The suite covers the pure matching engine: normalisation of all four order types
 
 ## Deployment notes
 
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Vercel + Neon checklist.
+
 - Deploy to Vercel and point `DATABASE_URL` at a pooled Neon connection.
-- `vercel.json` schedules `/api/cron/close-expired` every five minutes. Five-minute cron frequency requires a Vercel Pro plan; on Hobby, point an external scheduler at the same route instead.
-- Set `CRON_SECRET` in the deployment environment and send it as a bearer token.
+- The build and `postinstall` run `prisma generate`; the generated client is not committed.
+- `vercel.json` runs a **daily** cron fallback. `.github/workflows/close-expired.yml` calls the same endpoint every five minutes on the Hobby plan. On Vercel Pro, change the schedule to `*/5 * * * *` and disable the workflow.
+- Set `CRON_SECRET` in Vercel; Vercel Cron sends it as a bearer token. The GitHub workflow uses the same secret as a repository secret.
+- Set `SEED_ADMIN_PASSWORD` before seeding production; do not publish the admin password.
 - Set `RESEND_API_KEY` and verify a sender domain to deliver password reset emails. Without a key the app still works; messages are written to the server log.
 - Set `NEXT_PUBLIC_APP_URL` to the deployed origin so reset links point at production.
 - The market page polls REST endpoints every five seconds. If you move to WebSockets or SSE, replace the polling effects in `app/markets/[slug]/page.tsx`.
