@@ -7,10 +7,7 @@ import {
   type BookSnapshot,
   type MatchableOrder,
 } from "./matching";
-import {
-  resolvePositionPayout,
-  voidPositionPayout,
-} from "./settlement";
+import { resolvePositionPayout, voidPositionPayout } from "./settlement";
 import { cancelOpenOrders, lockMarket } from "./orders";
 
 type Tx = Prisma.TransactionClient;
@@ -38,6 +35,8 @@ export type MarketStats = {
   openInterest: number;
   change24h: number | null;
   spark: number[];
+  high24h: number | null;
+  low24h: number | null;
 };
 
 export type TradeTapeItem = {
@@ -112,6 +111,8 @@ export async function getMarketSnapshot(
       where: { marketId, createdAt: { gte: cutoff } },
       _sum: { quantity: true },
       _count: { _all: true },
+      _min: { yesPrice: true },
+      _max: { yesPrice: true },
     }),
     prisma.position.aggregate({
       where: { marketId },
@@ -136,6 +137,8 @@ export async function getMarketSnapshot(
     book,
     stats: {
       lastPrice,
+      high24h: volume._max.yesPrice ?? null,
+      low24h: volume._min.yesPrice ?? null,
       bestBid: book.bestBid,
       bestAsk: book.bestAsk,
       mid: book.mid,
@@ -200,6 +203,8 @@ export async function getMarketStatsMap(
       where: { marketId: { in: marketIds }, createdAt: { gte: cutoff } },
       _sum: { quantity: true },
       _count: { _all: true },
+      _max: { yesPrice: true },
+      _min: { yesPrice: true },
     }),
     prisma.position.groupBy({
       by: ["marketId"],
@@ -221,7 +226,12 @@ export async function getMarketStatsMap(
   const volumeByMarket = new Map(
     volumes.map((row) => [
       row.marketId,
-      { volume: row._sum.quantity ?? 0, trades: row._count._all },
+      {
+        volume: row._sum.quantity ?? 0,
+        trades: row._count._all,
+        low: row._min.yesPrice ?? null,
+        high: row._max.yesPrice ?? null,
+      },
     ]),
   );
   const interestByMarket = new Map(
@@ -253,6 +263,8 @@ export async function getMarketStatsMap(
 
     result.set(marketId, {
       lastPrice,
+      low24h: volume?.low ?? null,
+      high24h: volume?.high ?? null,
       bestBid: book.bestBid,
       bestAsk: book.bestAsk,
       mid: book.mid,
@@ -598,8 +610,11 @@ export async function resolveMarket(
       continue;
     }
 
-    const { payout, realizedDelta, winningShares: won } =
-      resolvePositionPayout(position, params.outcome);
+    const {
+      payout,
+      realizedDelta,
+      winningShares: won,
+    } = resolvePositionPayout(position, params.outcome);
 
     winningShares += won;
     totalPayout += payout;
@@ -731,10 +746,7 @@ export async function voidMarket(
       continue;
     }
 
-    const { payout, realizedDelta } = voidPositionPayout(
-      position,
-      lastPrice,
-    );
+    const { payout, realizedDelta } = voidPositionPayout(position, lastPrice);
 
     totalRefund += payout;
     holders += 1;

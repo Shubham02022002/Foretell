@@ -17,6 +17,8 @@ const EMPTY_STATS: MarketStats = {
   spread: null,
   volume24h: 0,
   trades24h: 0,
+  high24h: null,
+  low24h: null,
   openInterest: 0,
   change24h: null,
   spark: [],
@@ -54,8 +56,7 @@ export async function GET(request: NextRequest) {
     }
 
     const where: Prisma.MarketWhereInput = {
-      status:
-        status && status !== "DRAFT" ? status : { not: "DRAFT" },
+      status: status && status !== "DRAFT" ? status : { not: "DRAFT" },
       category,
     };
 
@@ -131,7 +132,9 @@ export async function GET(request: NextRequest) {
         case "closing":
           return a.closesAt.getTime() - b.closesAt.getTime();
         case "movers":
-          return b.movement - a.movement || b.stats.volume24h - a.stats.volume24h;
+          return (
+            b.movement - a.movement || b.stats.volume24h - a.stats.volume24h
+          );
         default:
           return b.createdAt.getTime() - a.createdAt.getTime();
       }

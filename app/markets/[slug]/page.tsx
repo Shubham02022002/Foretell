@@ -55,6 +55,8 @@ type MarketStats = {
   spread: number | null;
   volume24h: number;
   trades24h: number;
+  high24h: number | null;
+  low24h: number | null;
   openInterest: number;
   change24h: number | null;
   spark: number[];
@@ -114,6 +116,8 @@ const EMPTY_STATS: MarketStats = {
   spread: null,
   volume24h: 0,
   trades24h: 0,
+  high24h: null,
+  low24h: null,
   openInterest: 0,
   change24h: null,
   spark: [],
@@ -317,9 +321,7 @@ function MarketPageContent() {
   const viewStatus = mounted ? sessionStatus : "loading";
   const isPastClose = market ? new Date(market.closesAt) <= new Date() : false;
   const canTrade =
-    viewStatus === "authenticated" &&
-    market?.status === "OPEN" &&
-    !isPastClose;
+    viewStatus === "authenticated" && market?.status === "OPEN" && !isPastClose;
 
   const heldYes = position
     ? Math.max(0, position.yesShares - position.yesReserved)
@@ -333,9 +335,7 @@ function MarketPageContent() {
   const numericQuantity = Number(quantity);
   const validPrice =
     orderType === "MARKET" ||
-    (Number.isInteger(numericPrice) &&
-      numericPrice >= 1 &&
-      numericPrice <= 99);
+    (Number.isInteger(numericPrice) && numericPrice >= 1 && numericPrice <= 99);
   const validQuantity =
     Number.isInteger(numericQuantity) && numericQuantity > 0;
 
@@ -375,8 +375,7 @@ function MarketPageContent() {
         break;
       }
 
-      const unitPrice =
-        outcome === "YES" ? level.price : 100 - level.price;
+      const unitPrice = outcome === "YES" ? level.price : 100 - level.price;
       const filledHere = Math.min(remaining, level.size);
       notional += unitPrice * filledHere;
       filled += filledHere;
@@ -570,7 +569,9 @@ function MarketPageContent() {
           "Order cancelled — it would have crossed one of your own resting orders.",
         );
       } else if (orderType === "MARKET") {
-        setSuccessMessage("No resting liquidity at that size — nothing filled.");
+        setSuccessMessage(
+          "No resting liquidity at that size — nothing filled.",
+        );
       } else {
         setSuccessMessage("Order posted to the book.");
       }
@@ -654,12 +655,10 @@ function MarketPageContent() {
   }
 
   const displayYes =
-    stats.lastPrice ??
-    (stats.mid !== null ? Math.round(stats.mid) : null);
+    stats.lastPrice ?? (stats.mid !== null ? Math.round(stats.mid) : null);
   const displayNo = displayYes === null ? null : 100 - displayYes;
   const change = stats.change24h;
-  const canSubmit =
-    canTrade && validQuantity && validPrice && !submitting;
+  const canSubmit = canTrade && validQuantity && validPrice && !submitting;
   const maxBuyShares =
     action === "BUY" && orderType === "LIMIT" && wallet
       ? Math.floor(
@@ -750,8 +749,10 @@ function MarketPageContent() {
                     : `${displayYes}% implied`}
                 </p>
                 <p className="mt-1 font-mono text-[10px] text-muted">
-                  Bid {stats.bestBid === null ? "—" : formatCents(stats.bestBid)} ·
-                  Ask {stats.bestAsk === null ? "—" : formatCents(stats.bestAsk)}
+                  Bid{" "}
+                  {stats.bestBid === null ? "—" : formatCents(stats.bestBid)} ·
+                  Ask{" "}
+                  {stats.bestAsk === null ? "—" : formatCents(stats.bestAsk)}
                 </p>
               </div>
 
@@ -793,17 +794,19 @@ function MarketPageContent() {
             <div className="grid grid-cols-2 gap-px border-t border-line bg-line sm:grid-cols-4">
               <div className="bg-surface p-4">
                 <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
-                  Last
+                  24h range
                 </p>
                 <p className="mt-1 font-mono text-sm text-ink">
-                  {stats.lastPrice === null
+                  {stats.low24h === null || stats.high24h === null
                     ? "—"
-                    : formatCents(stats.lastPrice)}
+                    : stats.low24h === stats.high24h
+                      ? formatCents(stats.high24h)
+                      : `${formatCents(stats.low24h)} – ${formatCents(stats.high24h)}`}
                 </p>
               </div>
               <div className="bg-surface p-4">
                 <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
-                  24h change
+                  24h range
                 </p>
                 <p
                   className={`mt-1 font-mono text-sm ${
@@ -864,9 +867,7 @@ function MarketPageContent() {
                 Resolved{" "}
                 <span
                   className={
-                    market.resolution.outcome === "YES"
-                      ? "text-yes"
-                      : "text-no"
+                    market.resolution.outcome === "YES" ? "text-yes" : "text-no"
                   }
                 >
                   {market.resolution.outcome}
@@ -1056,16 +1057,18 @@ function MarketPageContent() {
                           {entry === "YES" ? "Yes" : "No"}
                         </span>
                         <span className="mt-0.5 block font-mono text-xs">
-                          {entryPrice === null
-                            ? "—"
-                            : formatCents(entryPrice)}
+                          {entryPrice === null ? "—" : formatCents(entryPrice)}
                         </span>
                       </button>
                     );
                   })}
                 </div>
 
-                <div className="flex items-center gap-1" role="group" aria-label="Order type">
+                <div
+                  className="flex items-center gap-1"
+                  role="group"
+                  aria-label="Order type"
+                >
                   {(["LIMIT", "MARKET"] as const).map((entry) => (
                     <button
                       key={entry}
@@ -1163,15 +1166,17 @@ function MarketPageContent() {
                         Max
                       </button>
                     )}
-                    {action === "BUY" && maxBuyShares !== null && maxBuyShares > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setQuantity(String(maxBuyShares))}
-                        className="border border-line px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
-                      >
-                        Max
-                      </button>
-                    )}
+                    {action === "BUY" &&
+                      maxBuyShares !== null &&
+                      maxBuyShares > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setQuantity(String(maxBuyShares))}
+                          className="border border-line px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
+                        >
+                          Max
+                        </button>
+                      )}
                   </div>
                 </label>
 
@@ -1268,7 +1273,13 @@ function MarketPageContent() {
                       {position.markPrice === null
                         ? "—"
                         : formatCents(position.markPrice)}{" "}
-                      · {formatCredits(Math.round(position.yesShares * (position.markPrice ?? 0)))} cr
+                      ·{" "}
+                      {formatCredits(
+                        Math.round(
+                          position.yesShares * (position.markPrice ?? 0),
+                        ),
+                      )}{" "}
+                      cr
                     </p>
                   </div>
                   <button
