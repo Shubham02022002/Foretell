@@ -167,6 +167,8 @@ function MarketPageContent() {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [position, setPosition] = useState<Position | null>(null);
   const [orders, setOrders] = useState<OpenOrder[]>([]);
+  const [cancellingAll, setCancellingAll] = useState(false);
+  const [cancelAllError, setCancelAllError] = useState("");
 
   const [bookView, setBookView] = useState<BookView>("YES");
   const [outcome, setOutcome] = useState<Outcome>("YES");
@@ -589,6 +591,28 @@ function MarketPageContent() {
       await Promise.all([loadBook(), loadAccount()]);
     } catch (cancelError) {
       setFormError(apiErrorMessage(cancelError, "Unable to cancel order."));
+    }
+  }
+
+  async function handleCancelAll() {
+    if (cancellingAll) {
+      return;
+    }
+
+    setCancellingAll(true);
+    setCancelAllError("");
+
+    try {
+      await axios.post(`/api/markets/${slug}/orders/cancel-all`);
+
+      window.dispatchEvent(new Event("wallet:updated"));
+      await Promise.all([loadBook(), loadAccount()]);
+    } catch (error) {
+      setCancelAllError(
+        apiErrorMessage(error, "Unable to cancel your open orders."),
+      );
+    } finally {
+      setCancellingAll(false);
     }
   }
 
@@ -1338,11 +1362,27 @@ function MarketPageContent() {
 
         {orders.length > 0 && (
           <div className="border border-line bg-surface">
-            <div className="border-b border-line px-5 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
               <h2 className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                 Open orders
               </h2>
+              <button
+                type="button"
+                onClick={handleCancelAll}
+                disabled={cancellingAll}
+                className="border border-line px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted transition-colors hover:border-ink hover:text-ink disabled:opacity-40"
+              >
+                {cancellingAll ? "Cancelling…" : "Cancel all"}
+              </button>
             </div>
+            {cancelAllError && (
+              <p
+                role="alert"
+                className="border-b border-no/30 bg-no-soft px-5 py-2 text-xs leading-5 text-no"
+              >
+                {cancelAllError}
+              </p>
+            )}
             <ul>
               {orders.map((order) => (
                 <li

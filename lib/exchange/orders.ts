@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@/app/generated/prisma/client";
 import type { Order, Position, Trade } from "@/app/generated/prisma/client";
-import type { OrderAction, OrderType, Outcome } from "@/app/generated/prisma/enums";
+import type {
+  OrderAction,
+  OrderType,
+  Outcome,
+} from "@/app/generated/prisma/enums";
 import { ApiError } from "@/lib/api/errors";
 import {
   MARKET_ORDER_PRICE,
@@ -42,6 +46,14 @@ export type PlaceOrderResult = {
   selfCrossed: boolean;
 };
 
+export type CancelUserOrdersResult = {
+  cancelled: number;
+  releasedCredits: number;
+  releasedShares: number;
+  balance: number;
+  reserved: number;
+};
+
 function storedPrice(input: PlaceOrderInput) {
   if (input.type === "MARKET") {
     return MARKET_ORDER_PRICE[input.action];
@@ -69,11 +81,7 @@ export async function lockMarket(tx: Tx, marketId: string) {
   }
 }
 
-async function requireOpenMarket(
-  tx: Tx,
-  marketId: string,
-  now: Date,
-) {
+async function requireOpenMarket(tx: Tx, marketId: string, now: Date) {
   // Lock and read the market in one statement; every order placement on a
   // market serialises on this row before touching the book.
   const rows = await tx.$queryRaw<
@@ -362,12 +370,7 @@ async function applyFill(
   // Apply the taker first: a market buy that cannot afford this level must
   // leave the book untouched, and any later failure rolls the whole
   // transaction back anyway.
-  const applied = await applyPartyEffects(
-    tx,
-    taker,
-    fill,
-    context.marketId,
-  );
+  const applied = await applyPartyEffects(tx, taker, fill, context.marketId);
 
   if (!applied) {
     return null;
@@ -399,7 +402,9 @@ async function applyFill(
           ? -party.ownPrice * fill.quantity
           : party.ownPrice * fill.quantity,
       type:
-        party.order.action === "BUY" ? ("TRADE_BUY" as const) : ("TRADE_SELL" as const),
+        party.order.action === "BUY"
+          ? ("TRADE_BUY" as const)
+          : ("TRADE_SELL" as const),
       createdAt: context.timestamp,
     })),
   });
@@ -632,10 +637,7 @@ export async function placeOrder(
       }
 
       const restingSide = bookSideFor(resting.action, resting.outcome);
-      const restingYesPrice = yesPriceFor(
-        resting.outcome,
-        resting.price,
-      );
+      const restingYesPrice = yesPriceFor(resting.outcome, resting.price);
 
       return (
         restingSide !== takerSide &&
@@ -940,4 +942,81 @@ export async function cancelOpenOrders(
   }
 
   return orders.length;
+}
+
+export async function cancelUserOrders(
+  tx: Tx,
+  params: { userId: string; marketId: string },
+): Promise<CancelUserOrdersResult> {
+  await lockMarket(tx, params.marketId);
+  const orders = await tx.order.findMany({
+    where: {
+      userId: params.userId,
+      marketId: params.marketId,
+      status: { in: ["OPEN", "PARTIAL"] },
+    },
+    select: {
+      id: true,
+      outcome: true,
+      action: true,
+      price: true,
+      quantity: true,
+      filledQuantity: true,
+    },
+  });
+  let cancelled = 0;
+  let releasedCredits = 0;
+  const releasedShares = { YES: 0, NO: 0 };
+  for (const order of orders) {
+    const remaining = order.quantity - order.filledQuantity;
+    if (remaining <= 0) continue;
+    cancelled += 1;
+    if (order.action === "BUY") {
+      releasedCredits += remaining * order.price;
+    } else {
+      releasedShares[order.outcome] += remaining;
+    }
+  }
+  if (releasedCredits > 0) {
+    await releaseCredits(tx, params.userId, releasedCredits);
+  }
+  for (const outcome of ["YES", "NO"] as const) {
+    if (releasedShares[outcome] > 0) {
+      await releaseShares(
+        tx,
+        params.userId,
+        params.marketId,
+        outcome,
+        releasedShares[outcome],
+      );
+    }
+  }
+
+  if (orders.length > 0) {
+    await tx.order.updateMany({
+      where: { id: { in: orders.map((order) => order.id) } },
+      data: { status: "CANCELLED", updatedAt: new Date() },
+    });
+
+    await tx.auditEvent.create({
+      data: {
+        userId: params.userId,
+        marketId: params.marketId,
+        action: "ORDERS_CANCELLED",
+        details: { cancelled, releasedCredits, releasedShares },
+      },
+    });
+  }
+  const wallet = await tx.wallet.findUnique({
+    where: { userId: params.userId },
+    select: { balance: true, reserved: true },
+  });
+
+  return {
+    cancelled,
+    releasedCredits,
+    releasedShares: releasedShares.YES + releasedShares.NO,
+    balance: wallet?.balance ?? 0,
+    reserved: wallet?.reserved ?? 0,
+  };
 }
